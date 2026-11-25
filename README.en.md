@@ -15,7 +15,7 @@ The notes, the command output and the logs are in Chinese, like the lectures the
 
 ## What you get
 
-`vsc run <id>` processes one lecture and writes a `summary.md`, organised in this order:
+`vsc run <id>` processes one lecture and writes a `summary.md`:
 
 - **Overview**: what the lecture was about.
 - **Chapter timeline**: chapters in time order (usually a dozen or so for a 45-minute lecture), each with start and end times and a few points. Times count from the start of the recording, so you can scrub to the matching moment to check.
@@ -26,17 +26,10 @@ The notes, the command output and the logs are in Chinese, like the lectures the
 - **ASR corrections**: terms the speech recognition misheard, corrected against what is on screen (for example `echo` heard as `apple`). The original and the correction are listed side by side so you can judge for yourself.
 - **For manual review**: what the models were unsure about, mostly items where the two modes disagree, with time and reason.
 
-Two modes run in parallel and are merged at the end:
+The note comes from two modes that are generated separately and then merged. The **transcription mode** turns the lecturer's speech into timestamped text sentence by sentence, adds a vision model's description of each slide, and has a text model summarise; the **video mode** has a multimodal model watch the whole recording and record a timeline and what happened on screen. In the merge the chapter timeline follows the video mode, the lecturer's wording follows the transcription, and commands and outputs follow the screen; where the two modes disagree nothing is forced either way, and the item goes under “for manual review”.
 
-- **Transcription mode**: turns the lecturer's speech into timestamped text sentence by sentence, has a vision model describe each slide, then lets a text model summarise segment by segment and reduce the result.
-- **Video mode**: a multimodal model watches the whole recording and records a detailed timeline and what happened on screen.
-
-When merging, the chapter timeline follows the video mode, the lecturer's wording follows the transcription, and commands and outputs follow the screen; where the two modes disagree nothing is forced either way, and the item goes under “for manual review”.
-
-A few more things:
-
-- **Idempotent**: every step is saved as it completes; rerunning the same command after an interruption picks up where it stopped.
-- **Fault tolerant**: an empty room, silence, a classroom with no screen recording, a lecturer who brought a laptop, a recording split into several segments, two video tracks of different lengths, truncated model output. Each of these is stated in the processing notes at the end of the note, so you know what may be missing. When there is no transcript (no microphone, or transcription failed) the note is based on the picture only, and says so.
+- **Idempotent**: every step is saved as it completes; rerunning the same command after an interruption or a failed step picks up where it stopped.
+- **Fault tolerant**: an empty room, silence, no screen recording, a lecturer who brought a laptop, a recording split into segments, truncated model output. Whichever of these applies, the processing notes at the end of the note say what may be missing; when there is no transcript (no microphone, or transcription failed) the note is based on the picture only.
 - **Batch**: `--title` / `--semester` process a whole course in one go; finished lessons are skipped, and one failed lesson does not stop the others.
 - **AI friendly**: `--json` prints structured results with stable exit codes, and an agent skill ships with the project: `skills/very-smart-class/SKILL.md`.
 
@@ -65,40 +58,30 @@ uv run vsc run 3f9a1c2e                             # process one lecture: downl
 uv run vsc summary 3f9a1c2e --print > notes.md      # print the notes and save them as a file
 ```
 
-The argument of `run` is the recording id: the `NewID` in the first column of `vsc list` (the first 8 characters are enough). The login session expires after about an hour; lessons already on disk are continued with `vsc run --local data/<course>`, which needs no login.
-
-### Common tasks
-
-| Goal | How |
-|---|---|
-| Process one lecture | `vsc run <id>` |
-| Process a whole course | `vsc list --semester current --title 编译原理` to see how many there are (the keyword matches the Chinese course name), then `vsc run --semester current --title 编译原理 --limit 5` |
-| Save model cost | `--no-a-path`: skip the whole-video pass; transcription and slides only |
-| Continue downloaded lessons | `vsc run --local data/<course>`, no login needed; the lesson folder may live anywhere, it is processed where it is |
-| Run selected stages only | `--stages transcribe,vision,summarize,render` |
-| Check progress | `vsc status <id>` |
-| Manage disk space | `--prune-video` (delete the original mp4 files once every step has succeeded; a failed step keeps them). Notes can still be regenerated locally afterwards and the video mode reuses the shrunken copy; cutting slides again needs a new `fetch`. `--min-free 2GB` sets the free-space floor before downloading |
-| Change models | `--model-text`, `--model-vision`, `--model-asr`, `--model-omni`, or set them in `.env` |
-
-Other options: `--omni-input Video1` (the video mode watches the camera track instead), `--omni-sample-seconds` (one frame every N seconds in the video mode, default 5), `--concurrency` (how many slides are described at once), `--no-skip-done` (do not skip finished lessons in a batch). All options: `vsc run --help`.
-
-After changing a model you do not need to clear any cache: every result records the model and the input it was computed from, is recomputed when they change, and the steps after it follow. A batch skips finished lessons by default; to have them recomputed after a model change, add `--no-skip-done`. `--force-vision` / `--force-omni` / `--force-fuse` recompute one step on purpose; the steps after it are recomputed as well.
+The argument of `run` is the recording id: the `NewID` in the first column of `vsc list` (the first 8 characters are enough). The login session expires after about an hour; lessons already on disk are continued with `vsc run --local data/<course>`, which needs no login and works wherever the directory lives.
 
 ### Commands
-
-All commands are idempotent; after an interruption, rerun the same command.
 
 | Command | Purpose |
 |---|---|
 | `vsc doctor` | Checks ffmpeg, API key, login, disk (5 GB or more free) and model configuration, and prints a fix for anything that fails |
-| `vsc login` | Log in. To avoid typing the password: `--username` with `--password-stdin`, or the environment variables `NJUPT_USERNAME` / `NJUPT_PASSWORD`; `--status` only checks the session; `--cookie` imports a browser session |
+| `vsc login` | Log in. `--username` with `--password-stdin`, or the environment variables `NJUPT_USERNAME` / `NJUPT_PASSWORD`, avoid typing the password; `--status` only checks the session; `--cookie` imports a browser session |
 | `vsc semesters` | Print the academic calendar; shows what `--semester` accepts (`current` or `2026-2027-1`) |
-| `vsc list` | Recordings. `--semester`, `--title`, `--start`, `--end`, `--limit`, `--order` |
+| `vsc list` | Recordings, newest first. `--semester`, `--title`, `--start`, `--end`, `--limit`, `--order` |
 | `vsc fetch <id>` | Download only. The camera track is skipped when the screen track has sound; `--full-download` gets everything, `--types VGA,Video1` selects |
 | `vsc prepare <id>` | Local processing only: extract the audio and cut the slides. `--threshold`, `--max-slides`, `--max-gap` tune the slide cutting; changed values recut |
-| `vsc run` | Download and process; options above |
+| `vsc run` | Download and process; options below |
 | `vsc status <id>` | Per-stage state, errors, processing notes, generated files and token usage. No network |
 | `vsc summary <id>` | Where the note is; `--print` writes it to stdout as is |
+
+Common `vsc run` options:
+
+- A whole course: `--semester current --title 编译原理 --limit 5`. Run `vsc list` with the same filters first to see how many there are.
+- Save cost: `--no-a-path` skips the video mode and relies on transcription and slides only, at about half the cost.
+- Selected stages: `--stages transcribe,vision,summarize,render`.
+- Disk: `--prune-video` deletes the original mp4 files once every stage has succeeded, and keeps them if one failed; notes and the video mode can still be rerun afterwards, cutting slides again needs a new `fetch`. `--min-free 2GB` is the free-space floor before downloading.
+- Models: `--model-text`, `--model-vision`, `--model-asr`, `--model-omni`, or set them in `.env`. No cache to clear: a stage whose model or input changed is recomputed, and the stages after it follow; to have finished lessons in a batch recomputed, add `--no-skip-done`.
+- Others: `--omni-input Video1` (the video mode watches the camera track), `--omni-sample-seconds` (one frame every N seconds, default 5), `--concurrency` (how many slides are described at once), `--force-vision` / `--force-omni` / `--force-fuse` (recompute one stage and the stages after it). All options: `vsc run --help`.
 
 ### For agents
 
@@ -111,7 +94,7 @@ With `--json` (before or after the command), stdout holds one JSON document and 
 | `2` | Command-line usage error. JSON is not guaranteed in this case; the reason is on stderr |
 | `3` | Not logged in, or the session expired |
 | `4` | Model service, Smart Classroom API or network error |
-| `5` | Partially done: a step failed and the rest is on disk; rerun with the failed step included to resume (with a `--stages` subset, stages you left out keep their earlier verdict, so the exit code does not change) |
+| `5` | Partially done: a step failed and the rest is on disk; rerun the same command to resume |
 | `6` | No match: the filter returned nothing, or the lesson had no note yet when `summary` was called |
 
 The rest is in `skills/very-smart-class/SKILL.md`; agents read that file directly.
@@ -132,9 +115,8 @@ vsc run <id>
   render      writes summary.md
 ```
 
-- **When the lecturer brings a laptop**, the recorded classroom PC shows nothing useful. The program samples up to 8 frames and asks the vision model whether they contain teaching material; at least 2 must, otherwise it switches to the camera track, crops the area of the projected screen and recognises that instead. The only question is “is this teaching material shown to the class”, independent of the subject.
-- **A failed step does not spoil the lecture.** The failed step and its reason go into the processing notes at the end, and the other steps continue. When transcription fails, a note based on the picture alone is still produced, and rerunning the same command after the problem is fixed fills in the rest. Only when downloading, local processing or the note-writing step itself fails is there no note; rerun in that case too.
-- **Models come from Alibaba Cloud Bailian only.** Supporting another provider means changing code; see [CONTRIBUTING.md](CONTRIBUTING.md).
+- **When the lecturer brings a laptop**, the recorded classroom PC shows nothing useful. The program samples up to 8 frames and asks the vision model whether they contain teaching material; at least 2 must, otherwise it switches to the camera track, crops the area of the projected screen and recognises that instead.
+- **Models come from Alibaba Cloud Bailian only**; other providers are not implemented, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Output files
 
@@ -192,17 +174,17 @@ Two things change the cost:
 ## Known limitations
 
 - `i.njupt.edu.cn` and `njupt.smartclass.cn` must be reachable.
-- The models are fallible. “For manual review” lists where the two modes disagree or the model was unsure; the processing notes say what may be incomplete. Read both first when revising.
+- The models are fallible. When revising, read “for manual review” and the processing notes at the end of the note first.
 - Lessons recorded in several segments are processed segment by segment; timestamps are not aligned across segments.
 - Blackboard lectures (nothing on the screen, chalk only): the camera track is used and the board area is cropped, but this path has not been verified on a real recording yet.
 - Recordings longer than 2 hours are not split.
-- The screen and camera tracks can differ in length; when they differ by more than 5 seconds it is stated in the processing notes and the timeline may be off. The `StartTime` in index.xml turned out not to be an offset from the start of the recording (values of 640 s and 23168 s occur), so it is not used to correct timestamps; both tracks share one origin.
+- The screen and camera tracks can differ in length; when they differ by more than 5 seconds it is stated in the processing notes and the timeline may be off. The program does not correct for the difference; both tracks share one origin.
 - Old recordings whose media the platform has deleted (they are still listed) fail to download; pick a recent one.
 
 ## Privacy
 
 - The password is used once in the login request and never written to disk; only the session cookie is stored locally (`data/.session.json`). That file is your login: delete it before handing `data/` or a lesson folder to anyone.
-- Recordings and notes stay on your machine. Apart from logging in, what leaves it is only what the models need to analyse: audio, slide screenshots, the downscaled recording, and the text the models produce from them. These files contain other people's voices and images; keep them for your own revision and do not share them.
+- Recordings and notes stay on your machine. Apart from logging in, what leaves it is only what the models need to analyse: audio, slide screenshots, the downscaled recording, and the text the models produce from them. These files contain other people's voices and images.
 
 ## Contributing
 
