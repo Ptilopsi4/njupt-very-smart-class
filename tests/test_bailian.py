@@ -117,7 +117,10 @@ def test_upload_temp_flow(client, monkeypatch):
     uploads: list[dict] = []
 
     def fake_post(url, files=None, timeout=None, **kw):
-        uploads.append({"url": url, "files": list(files), "headers": kw.get("headers")})
+        # 真实 requests 在这里读文件句柄：上传若跑到了 with 外面，句柄已关闭，这一步就会失败
+        uploads.append(
+            {"url": url, "files": list(files), "headers": kw.get("headers"), "body": files["file"][1].read()}
+        )
         return _Upload()
 
     class _S(_FakeSession):
@@ -137,6 +140,7 @@ def test_upload_temp_flow(client, monkeypatch):
     assert url.startswith("oss://d/x/") and "模型" not in url
     assert client.session.requests[0]["params"] == {"action": "getPolicy", "model": "模型 中文"}
     assert uploads[0]["url"] == "https://oss.example" and "OSSAccessKeyId" in uploads[0]["files"]
+    assert uploads[0]["body"] == path.read_bytes()
 
 
 def test_missing_key_raises(tmp_path, monkeypatch):
