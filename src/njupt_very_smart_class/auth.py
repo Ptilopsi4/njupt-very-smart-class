@@ -15,6 +15,9 @@ from .vendor.njupt_sso import NjuptSso
 
 SSO_SERVICE = "https://njupt.smartclass.cn/SystemSpace/Redirect.aspx"
 SMARTCLASS_HOST = "njupt.smartclass.cn"
+# 接口只认这一个 cookie，其余（OnlineUser、loginLivePage_*）不校验。它是 HttpOnly，页面脚本读不到，
+# 手工导入只能来自 DevTools 的请求头。
+CREDENTIAL_COOKIE = "PowerCreatorCMSAuthenticationID"
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"
 )
@@ -48,7 +51,10 @@ def login_with_password(session: requests.Session, username: str, password: str)
 
 
 def import_cookie_header(session: requests.Session, cookie_header: str) -> int:
-    """把浏览器 DevTools 里复制的 Cookie 头（可带 "Cookie:" 前缀）注入 smartclass 域。"""
+    """把浏览器 DevTools 里复制的 Cookie 头（可带 "Cookie:" 前缀）注入 smartclass 域。
+
+    这里不判断凭证是否有效：无效凭证与有效凭证同名、同格式，只有服务端能分辨，调用方必须再用接口验证。
+    """
     header = cookie_header.strip()
     if header.lower().startswith("cookie:"):
         header = header[7:]

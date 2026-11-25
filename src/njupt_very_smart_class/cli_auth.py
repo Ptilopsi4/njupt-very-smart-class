@@ -33,6 +33,15 @@ from .cli import (
 from .config import ConfigError, effective_models
 from .vendor.njupt_sso import NjuptSsoException
 
+# 凭证是 HttpOnly，只能从请求头复制；页面看着已登录时凭证也可能已失效，所以步骤里带 view-source 自查。
+COOKIE_COPY_STEPS = (
+    "重新获取：1) 浏览器登录后打开 https://njupt.smartclass.cn/UserSpace/CourseList.aspx；"
+    "2) 自查：地址栏打开 view-source:https://njupt.smartclass.cn/UserSpace/CourseList.aspx，能搜到你的学号才是有效凭证，"
+    "否则先重新登录；"
+    "3) F12 → Network → 刷新 → 点第一条 CourseList.aspx → Request Headers → cookie 行右键 Copy value；"
+    '4) vsc login --cookie "<粘贴>"，再 vsc login --status 确认'
+)
+
 
 def doctor(json_flag: JsonFlag = False) -> None:
     """预检：ffmpeg、模型密钥、登录会话、磁盘、模型配置。任何一项不满足都会给出修复命令。
@@ -81,7 +90,9 @@ def doctor(json_flag: JsonFlag = False) -> None:
         "session",
         session_state == "ok",
         session_detail,
-        None if session_state == "ok" else "vsc login（或 vsc login --cookie '<浏览器 Cookie 头>'）",
+        None
+        if session_state == "ok"
+        else "vsc login；用浏览器里已登录的会话则 vsc login --cookie，复制步骤见 vsc login --help",
     )
     free_gb = shutil.disk_usage(data_dir()).free / (1 << 30)
     check(
@@ -139,7 +150,12 @@ def login(
         bool, typer.Option("--password-stdin", help="从 stdin 读第一行作为密码（非交互式）")
     ] = False,
     cookie: Annotated[
-        str | None, typer.Option("--cookie", help='浏览器 DevTools 复制的 njupt.smartclass.cn Cookie 头，如 "a=1; b=2"')
+        str | None,
+        typer.Option(
+            "--cookie",
+            help="浏览器登录后，从 DevTools 的 Network → 第一条 CourseList.aspx 请求 → Request Headers 的 cookie 行复制整行；"
+            "登录凭证 PowerCreatorCMSAuthenticationID 是 HttpOnly，Console 里的 document.cookie 读不到",
+        ),
     ] = None,
     status: Annotated[
         bool, typer.Option("--status", help="只检查当前会话是否有效，不登录（退出码 0 有效 / 3 无效）")
@@ -149,7 +165,7 @@ def login(
     """登录并保存会话到 data/.session.json（约 1 小时过期）。
 
     非交互式：vsc login --username <学号> --password-stdin < pw.txt   或   NJUPT_PASSWORD=... vsc login -u <学号>
-    浏览器 Cookie：vsc login --cookie "ASP.NET_SessionId=...; .ASPXAUTH=..."
+    浏览器 Cookie：vsc login --cookie "PowerCreatorCMSAuthenticationID=...; OnlineUser=..."（从 DevTools 的请求头复制，见 --cookie）
     """
     apply_json_flag(json_flag)
     username = username or os.environ.get("NJUPT_USERNAME")
@@ -172,6 +188,12 @@ def login(
             if count == 0:
                 raise typer.BadParameter("Cookie 头解析不到任何键值对")
             log(f"已导入 {count} 个 cookie")
+            if not any(c.name == auth.CREDENTIAL_COOKIE for c in session.cookies):
+                fail(
+                    f"导入的 Cookie 里没有登录凭证 {auth.CREDENTIAL_COOKIE}：它是 HttpOnly，页面脚本（document.cookie）读不到。"
+                    + COOKIE_COPY_STEPS,
+                    EXIT_AUTH,
+                )
         else:
             if not username:
                 raise typer.BadParameter("非交互模式需要 --username（或环境变量 NJUPT_USERNAME）")
@@ -184,13 +206,23 @@ def login(
             log("SSO 登录成功")
         total = client.verify(client.NjuptSmartclass(session))
         path = auth.save_session(session)
+        if cookie:
+            log("导入的 Cookie 不带过期时间，是否失效以 vsc login --status 为准")
         succeed_or_text(
             {"valid": True, "visible_recordings": total, "session_file": str(path)},
             f"[green]会话有效[/green]：可见录播 {total} 条，已保存到 {path}",
         )
     except NjuptSsoException as exc:
         fail(f"SSO 登录失败 [{exc.code}] {exc.message}", EXIT_AUTH)
-    except (AuthError, ValueError) as exc:
+    except AuthError as exc:
+        if cookie:
+            fail(
+                f"导入的 Cookie 未通过验证：这张 {auth.CREDENTIAL_COOKIE} 是无效凭证或已过期，页面能打开不代表凭证有效。"
+                + COOKIE_COPY_STEPS,
+                EXIT_AUTH,
+            )
+        fail(str(exc), EXIT_AUTH)
+    except ValueError as exc:
         fail(str(exc), EXIT_AUTH)
     except requests.RequestException as exc:
         fail(f"网络错误：{exc}", EXIT_UPSTREAM)

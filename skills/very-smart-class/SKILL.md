@@ -40,7 +40,7 @@ doctor ──→ list --json ──→ run --json ──→ status --json ──
 |---|---|---|
 | `doctor` | Pre-flight: ffmpeg, API key, session, disk (5 GB or more free), model configuration | `ok`, `checks[]{name, ok, detail, fix}` |
 | `login --status` | Only check the session | `valid`, `visible_recordings` (recordings visible to this account), `session_file` |
-| `login -u <student id> --password-stdin` / `--cookie "<Cookie header>"` | Non-interactive login. Copy the Cookie header from a logged-in browser request and treat it as a credential | `valid`, `session_file` |
+| `login -u <student id> --password-stdin` / `--cookie "<Cookie header>"` | Non-interactive login. `--cookie` takes the `cookie:` request header copied from the user's logged-in browser; read “Cookie login” before asking for it | `valid`, `session_file` |
 | `semesters` | Academic calendar | `current{name, start, end}`, `terms[]{name, start, end}` |
 | `list [--semester current] [--title X] [--start D] [--end D] [--limit N] [--order desc\|asc]` | Recordings, newest first. `--title` is a keyword; course name, teacher and classroom are all part of the title. `--start` / `--end` filter by recording date, `YYYY-MM-DD`, inclusive. Dates take precedence over `--semester`; `--semester` takes `current` or `2026-2027-1` | `count`, `items[]{new_id, title, course, teachers, classroom, start, stop, minutes}`; `start` / `stop` are ISO timestamps with a time zone |
 | `fetch <id> [--types VGA,Video1] [--full-download]` | Download only (idempotent). A recording has two video tracks: VGA is the classroom PC's screen, Video1 the classroom camera; by default only the screen track is downloaded when it carries sound | `lesson_dir`, `streams[]{kind, file, bytes, start_time}` (the tracks on disk), `missing[]` (tracks the recording does not have), `skipped[]` (tracks that exist but were not downloaded because the screen track carries sound; `--full-download` gets them) |
@@ -90,6 +90,17 @@ Which model each of the eight `run` stages uses, so you can tell what a model ch
 - A batch skips lessons whose `state.json` marks every stage as done and whose `summary.md` exists. **That check ignores the model**: after a model change, add `--no-skip-done` to have finished lessons recomputed. To continue with the next batch, raise `--limit` and rerun the same command; it takes the first N recordings in order and skips the finished ones. If the session expires midway, the batch ends with exit code 3; after the user logs in, rerun the same batch command.
 - Lessons that are already downloaded are finished with `run --local`, no login needed; log in again only to download more.
 
+## Cookie login (when the user logs in with their browser)
+
+- Only one cookie authenticates, `PowerCreatorCMSAuthenticationID`, and it is **HttpOnly**: page scripts (`document.cookie`) cannot read it, so it has to be copied from a request header in DevTools.
+- An invalid credential and a valid one have the same name and format, so neither you nor the user can tell them apart by eye; only `vsc --json login --status` can. A page that looks logged in proves nothing: after the session expires the page still renders while the credential has already stopped being accepted.
+- When the user offers a browser session, give them these steps as they are (same URL, same order):
+  1. In the browser, open `https://njupt.smartclass.cn/UserSpace/CourseList.aspx` logged in. Self-check: open `view-source:https://njupt.smartclass.cn/UserSpace/CourseList.aspx` and search for the student ID; it appears only with a valid credential, otherwise log in again first.
+  2. `F12` → Network → reload → click the first request (`CourseList.aspx`, type document) → Request Headers → the `cookie:` line → right-click → Copy value.
+  3. `vsc --json login --cookie "<pasted>"`. The paste is a credential: never echo it.
+  4. `vsc --json login --status`. Only `valid: true` counts. If the import is rejected, the credential was invalid or had expired: report that (the tool cannot see the user's browser) and go back to step 1.
+- `vsc login --cookie` fails with these steps in `error` when the credential is missing or rejected; quote it. `OnlineUser` and `loginLivePage_*` in the same header are harmless and not required. An imported session carries no expiry, so `status` and `doctor` cannot show the remaining time; expect about an hour from the browser login.
+
 ## Cost and duration (one 45-minute lecture)
 
 - Full run ≈ 10 min and ¥0.64; `--no-a-path` ≈ 5 min and ¥0.37; when the lecturer brought a laptop and the camera has to be used, ≈ ¥0.86. Quote a batch as ¥0.64–0.86 per lecture plus download time.
@@ -101,7 +112,7 @@ Which model each of the eight `run` stages uses, so you can tell what a model ch
 
 - The user wants “one lecture”: `run <id>` on that lesson, not a batch.
 - The user wants “the whole course”: `list` first, report the count, the estimated cost and the duration, and run only after confirmation; default `--limit 5`; to continue, raise `--limit` and rerun the same command.
-- Exit code 3: never guess the password and never run `vsc login` without `--password-stdin` yourself (it is interactive and fails outside a terminal); have the user run `vsc login` in a terminal or supply a Cookie.
+- Exit code 3: never guess the password and never run `vsc login` without `--password-stdin` yourself (it is interactive and fails outside a terminal); have the user run `vsc login` in a terminal, or guide them through “Cookie login”.
 - Exit code 5: read `errors`; it is usually the network, rate limiting or truncated output, so rerun the same command. After a 429 wait 1–5 minutes before retrying; after two or three failed retries tell the user. If the video mode keeps failing, `--no-a-path` produces a transcription-mode note first and a later rerun adds the rest. When `notes` mentions disk space, tell the user that `--prune-video` or a lower `--min-free` would help and **delete files only with their consent**.
 - The recording may be an empty room (`empty+no_speech`): say so; do not dress “nothing here” up as notes.
 - Images in the note are paths relative to the lesson directory and will not render if the text is pasted into a chat; hand over the `summary` file path instead.

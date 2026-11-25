@@ -171,3 +171,37 @@ def test_login_status_uses_saved_session(monkeypatch, tmp_path):
     r = CliRunner().invoke(app, ["--json", "login", "--status"])
     assert r.exit_code == 0, r.output
     assert seen["cookies"] == 1 and json.loads(r.stdout)["visible_recordings"] == 1698
+
+
+def test_login_cookie_without_credential_fails_before_verify(monkeypatch, tmp_path):
+    from typer.testing import CliRunner
+
+    from njupt_very_smart_class import client
+    from njupt_very_smart_class.cli import app
+
+    monkeypatch.setattr(auth, "session_file", lambda: tmp_path / ".session.json")
+    seen = []
+    monkeypatch.setattr(client, "verify", lambda sc: seen.append(sc) or 1)
+    r = CliRunner().invoke(app, ["--json", "login", "--cookie", "OnlineUser=x; a=b"])
+    assert r.exit_code == 3, r.output
+    assert auth.CREDENTIAL_COOKIE in json.loads(r.stdout)["error"]
+    assert not seen and not (tmp_path / ".session.json").exists()  # 没有凭证：不拿它去问接口，也不落盘
+
+
+def test_login_cookie_rejected_shows_copy_steps(monkeypatch, tmp_path):
+    from typer.testing import CliRunner
+
+    from njupt_very_smart_class import client
+    from njupt_very_smart_class.cli import app
+
+    monkeypatch.setattr(auth, "session_file", lambda: tmp_path / ".session.json")
+
+    def verify(sc):
+        raise AuthError("会话无效：接口返回非 JSON（未登录或 Cookie 过期），请重新 vsc login")
+
+    monkeypatch.setattr(client, "verify", verify)
+    r = CliRunner().invoke(app, ["--json", "login", "--cookie", f"{auth.CREDENTIAL_COOKIE}=invalid; OnlineUser=x"])
+    assert r.exit_code == 3, r.output
+    err = json.loads(r.stdout)["error"]
+    assert "view-source:https://njupt.smartclass.cn/UserSpace/CourseList.aspx" in err and "Copy value" in err
+    assert not (tmp_path / ".session.json").exists()
