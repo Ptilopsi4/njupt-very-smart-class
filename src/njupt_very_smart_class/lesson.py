@@ -64,14 +64,16 @@ def fetch_lesson(
 
     minimal=True：VGA 有音轨时不再下载 Video1（VGA 与机位流是同一路混音，体积约 1/7）；
     VGA 不存在或没有音轨时才下载 Video1。minimal=False 下载 types 里全部存在的流。
+    返回的 Segment.sources 是录像实际有的流，Segment.kept 是本次之后磁盘上有的流：
+    「主动没下」和「教室没有」是两回事，调用方据这两个字段分别报。
     """
     info = resolve_new_id(sc, new_id)
     lesson_dir = paths.lesson_dir(info.course_name, info.id)
     download.write_meta(lesson_dir, info)
     segments = download.fetch_segments(sc.session, info, lesson_dir, types=types)
-    for seg in segments:
+    for i, seg in enumerate(segments):
         seg_dir = seg.index_path.parent
-        probes: dict[str, dict] = {}
+        probes: dict[str, dict] = _known_probes(seg_dir)
         deferred: list[download.StreamSource] = []
         has_vga = any(s.kind == "VGA" for s in seg.sources)
         for src in seg.sources:
@@ -89,15 +91,30 @@ def fetch_lesson(
                 continue  # VGA 已含音轨，省下 1 GB
             else:
                 probes[dest.name] = _download_and_probe(sc, src, dest, min_free_bytes, progress, seg_dir)
-        kept = [s for s in seg.sources if f"{s.kind}.mp4" in probes]
-        segments[segments.index(seg)] = dataclasses.replace(seg, sources=kept)
+        segments[i] = dataclasses.replace(seg, kept=tuple(probes))
         if probes:
             (seg_dir / "probe.json").write_text(json.dumps(probes, ensure_ascii=False, indent=2), encoding="utf-8")
     return info, lesson_dir, segments
 
 
+def _known_probes(seg_dir: Path) -> dict[str, dict]:
+    """上次 fetch 的探测结果：补下新流时合并进来，已不在磁盘上的文件不保留。"""
+    path = seg_dir / "probe.json"
+    if not path.exists():
+        return {}
+    try:
+        known = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    return {name: probe for name, probe in known.items() if (seg_dir / name).exists()}
+
+
 def stream_start_times(seg_dir: Path) -> dict[str, float]:
-    """各路流相对录制起点的开始秒数（来自 streams.json）；缺失时视为 0。"""
+    """index.xml 里各路流的 StartTime（秒）。
+
+    语义未确认：实测不支持「相对录制起点的偏移」（后开始的流并没有短同样的秒数，还出现过 640 s、23168 s 的值），
+    所以不拿它换算时间戳，只在两路时长对不上时写进提示。
+    """
     path = seg_dir / "streams.json"
     if not path.exists():
         return {}
@@ -169,20 +186,25 @@ def prepare_lesson(
     for seg_dir in segment_dirs(lesson_dir):
         notes: list[str] = []
         audio_src = pick_audio_source(seg_dir)
-        if audio_src is None:
+        wav = seg_dir / "audio.wav"
+        if audio_src is not None:
+            media.extract_audio(audio_src, wav)
+            audio_name = audio_src.name
+        elif _wav_usable(wav):
+            audio_name = wav.name  # --prune-video 之后原件不在；wav 是转写和时长校验的依据，完好就直接用
+        else:
             have = [n for n in _STREAM_FILES if (seg_dir / n).exists()]
             raise RuntimeError(
-                f"{seg_dir} 没有含音轨的视频流（已有：{have or '无'}）；"
+                f"{seg_dir} 没有含音轨的视频流（已有：{have or '无'}），audio.wav 也不可用；"
                 "请用 --types 重新 fetch 至少一路含音轨的流（VGA 通常已含）"
             )
-        wav = media.extract_audio(audio_src, seg_dir / "audio.wav")
         probe = media.probe(wav)
         audio_seconds = media.duration_seconds(probe)
         if audio_seconds < 1.0:
             raise RuntimeError(
                 f"{audio_src.name} 抽出的音频只有 {audio_seconds:.1f} s，文件可能损坏，请删除 {wav.name} 后重跑"
             )
-        notes.extend(_stream_duration_notes(seg_dir, audio_src.name, audio_seconds))
+        notes.extend(_stream_duration_notes(seg_dir, audio_name, audio_seconds))
         vga = seg_dir / "VGA.mp4"
         slide_list: list[slides.Slide] = []
         if vga.exists():
@@ -198,7 +220,7 @@ def prepare_lesson(
             SegmentMedia(
                 dir=seg_dir,
                 audio=wav,
-                audio_source=audio_src.name,
+                audio_source=audio_name,
                 audio_seconds=audio_seconds,
                 slides=slide_list,
                 slides_video=vga if vga.exists() else None,
@@ -206,6 +228,16 @@ def prepare_lesson(
             )
         )
     return results
+
+
+def _wav_usable(wav: Path) -> bool:
+    """audio.wav 能探测且不短于 1 s。"""
+    if not wav.exists():
+        return False
+    try:
+        return media.duration_seconds(media.probe(wav)) >= 1.0
+    except media.MediaError:
+        return False
 
 
 def _stream_duration_notes(seg_dir: Path, audio_name: str, audio_seconds: float) -> list[str]:

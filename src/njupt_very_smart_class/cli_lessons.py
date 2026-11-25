@@ -14,7 +14,7 @@ import requests
 import typer
 from rich.table import Table
 
-from . import client, download, lesson, media, pipeline
+from . import client, download, lesson, media, pipeline, slides
 from .auth import AuthError
 from .cli import (
     CTX,
@@ -121,7 +121,7 @@ def list_videos(
     ] = None,
     order: Annotated[str, typer.Option("--order", help="时间顺序 desc（新→旧，默认）/ asc")] = "desc",
     limit: Annotated[int | None, typer.Option("--limit", "-n", help="最多返回条数")] = None,
-    json_out: Annotated[bool, typer.Option("--json", help="输出 JSON（数组）")] = False,
+    json_out: Annotated[bool, typer.Option("--json", help="输出 JSON（与全局 --json 同一信封）")] = False,
 ) -> None:
     """列出当前账号可见的录播。agent 用 --json；配合 --semester current --title 圈定范围。
 
@@ -233,15 +233,18 @@ def fetch(
         from .cli_run import fail_pipeline_exc
 
         fail_pipeline_exc(exc)
-    have = sorted({s.kind for seg in segments for s in seg.sources})
-    missing = sorted(set(kinds) - set(have))
+    available = sorted({s.kind for seg in segments for s in seg.sources})
+    on_disk = sorted({k.removesuffix(".mp4") for seg in segments for k in seg.kept})
+    missing = sorted(set(kinds) - set(available))
+    skipped = sorted(set(available) - set(on_disk))  # minimal 主动没下，不等于教室没有
     streams = []
     for seg in segments:
         for src in seg.sources:
             path = seg.index_path.parent / f"{src.kind}.mp4"
-            streams.append(
-                {"kind": src.kind, "file": str(path), "bytes": path.stat().st_size, "start_time": src.start_time}
-            )
+            if path.exists():
+                streams.append(
+                    {"kind": src.kind, "file": str(path), "bytes": path.stat().st_size, "start_time": src.start_time}
+                )
     if CTX.json_mode:
         succeed(
             {
@@ -250,14 +253,21 @@ def fetch(
                 "lesson_dir": str(lesson_dir),
                 "streams": streams,
                 "missing": missing,
+                "skipped": skipped,
             }
         )
         return
     log(f"[green]{info.course_name}[/green] {info.title} → {lesson_dir}")
     if missing:
         warn(f"该录像缺少流 {missing}（教室没有该设备）")
-    probes_path = lesson_dir / "probe.json"
-    probes = json.loads(probes_path.read_text(encoding="utf-8")) if probes_path.exists() else {}
+    if skipped:
+        log(f"按默认策略未下载 {skipped}（屏幕流已含声音）；需要时加 --full-download")
+    # 多段录制时 probe.json 在各分段目录下
+    probes: dict[str, dict] = {}
+    for seg in segments:
+        probe_path = seg.index_path.parent / "probe.json"
+        if probe_path.exists():
+            probes.update(json.loads(probe_path.read_text(encoding="utf-8")))
     for s in streams:
         name = Path(s["file"]).name
         desc = lesson.describe_streams(probes.get(name, {}))
@@ -268,9 +278,11 @@ def prepare(
     new_id: Annotated[str, typer.Argument(help="录播 NewID（可前缀），需先 fetch")],
     threshold: Annotated[
         float, typer.Option("--threshold", help="scene 检测阈值；白底文字 PPT 翻页约 0.1–0.25")
-    ] = 0.08,
-    max_slides: Annotated[int, typer.Option("--max-slides", help="幻灯片上限，超出等距抽样")] = 150,
-    max_gap: Annotated[float, typer.Option("--max-gap", help="相邻幻灯片超过此秒数则补一帧")] = 180.0,
+    ] = slides.DEFAULT_THRESHOLD,
+    max_slides: Annotated[
+        int, typer.Option("--max-slides", help="幻灯片上限，超出等距抽样")
+    ] = slides.DEFAULT_MAX_SLIDES,
+    max_gap: Annotated[float, typer.Option("--max-gap", help="相邻幻灯片超过此秒数则补一帧")] = slides.DEFAULT_MAX_GAP,
     json_flag: JsonFlag = False,
 ) -> None:
     """抽 16 kHz wav；从 VGA.mp4 切幻灯片到 slides/。纯本地，不调模型，幂等。"""

@@ -17,6 +17,12 @@ from PIL import Image
 
 from .media import SUBPROCESS_FLAGS, MediaError, grab_frame, require_ffmpeg
 
+# 切页参数的唯一出处：函数默认值、RunOptions、CLI 选项都引用这里
+DEFAULT_THRESHOLD = 0.08
+DEFAULT_MAX_SLIDES = 150
+DEFAULT_MAX_GAP = 180.0
+_PARAMS_DEFAULTS = {"threshold": DEFAULT_THRESHOLD, "max_slides": DEFAULT_MAX_SLIDES, "max_gap": DEFAULT_MAX_GAP}
+
 # [Parsed_showinfo_1 @ ...] n:   0 pts:  12345 pts_time:1.234 ...
 _SHOWINFO_RE = re.compile(r"\bn:\s*(\d+)\s+pts:\s*(-?\d+)\s+pts_time:([\d.]+)")
 
@@ -193,18 +199,32 @@ def _fill_long_gaps(
     return sorted(kept + extra)
 
 
+def _load_params(path: Path) -> dict:
+    """上次切页用的参数；旧版没记，按代码默认值看待（升级后不会因为「不知道」而整课重切）。"""
+    if not path.exists():
+        return dict(_PARAMS_DEFAULTS)
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return dict(_PARAMS_DEFAULTS)
+
+
 def extract_slides(
     src: Path,
     out_dir: Path,
     *,
-    threshold: float = 0.08,
-    max_slides: int | None = 150,
-    max_gap: float = 180.0,
+    threshold: float = DEFAULT_THRESHOLD,
+    max_slides: int | None = DEFAULT_MAX_SLIDES,
+    max_gap: float = DEFAULT_MAX_GAP,
 ) -> list[Slide]:
-    """主入口：从屏幕流视频切出幻灯片，写 slides.json；已存在则直接读回。"""
+    """主入口：从屏幕流视频切出幻灯片，写 slides.json 与 params.json；参数没变则直接读回，变了就重切。"""
     require_ffmpeg()
     manifest = out_dir / "slides.json"
-    if manifest.exists():
+    params = {"threshold": threshold, "max_slides": max_slides, "max_gap": max_gap}
+    if manifest.exists() and _load_params(out_dir / "params.json") == params:
+        params_path = out_dir / "params.json"
+        if not params_path.exists():
+            params_path.write_text(json.dumps(params), encoding="utf-8")  # 旧版清单：把「按默认值看待」记下来
         return [
             Slide(index=int(d["index"]), time=float(d["time"]), file=d["file"])
             for d in json.loads(manifest.read_text(encoding="utf-8"))
@@ -227,6 +247,7 @@ def extract_slides(
         json.dumps([{**dataclasses.asdict(s), "source": "screen"} for s in slides], ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+    (out_dir / "params.json").write_text(json.dumps(params), encoding="utf-8")
     return slides
 
 

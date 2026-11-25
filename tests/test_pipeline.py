@@ -236,3 +236,76 @@ def test_no_speech_lesson_still_renders(monkeypatch, lesson_dir):
     assert any("无有效语音" in line for line in logs) and any("转写模式跳过" in line for line in logs)
     c = json.loads((lesson_dir / "c_result.json").read_text(encoding="utf-8"))
     assert c["no_speech"] and c["result"] == {}
+
+
+def test_run_does_not_report_skipped_camera_stream_as_missing(monkeypatch, lesson_dir):  # noqa: F811
+    from types import SimpleNamespace
+
+    from njupt_very_smart_class.download import Segment, StreamSource
+
+    seg = Segment(
+        index_path=lesson_dir / "index.xml",
+        sources=[StreamSource("VGA", "u"), StreamSource("Video1", "u")],
+        kept=("VGA.mp4",),
+    )
+    monkeypatch.setattr(
+        lesson,
+        "fetch_lesson",
+        lambda *a, **kw: (SimpleNamespace(course_name="Linux编程", title="t"), lesson_dir, [seg]),
+    )
+    logs: list[str] = []
+    report = pipeline.run_lesson(
+        object(), "ID42", stages=("fetch", "prepare"), models=fake_model_set(), log=logs.append
+    )
+    assert not any("缺少流" in n for n in report["state"]["notes"])
+    assert any("未下载" in ln and "Video1" in ln for ln in logs)
+
+
+def _sine_wav(path, seconds: int) -> None:
+    import subprocess
+
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-nostdin",
+            "-y",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            f"sine=frequency=440:duration={seconds}",
+            "-ar",
+            "16000",
+            "-ac",
+            "1",
+            str(path),
+        ],
+        check=True,
+        timeout=60,
+    )
+
+
+def test_transcript_cache_tracks_audio_and_backfills_speech_ratio(tmp_path):
+    wav = tmp_path / "audio.wav"
+    _sine_wav(wav, 6)
+    out = wav.with_name("transcript.json")
+    asr.write_transcript(
+        out,
+        {
+            "model": "fake-asr",
+            "duration_ms": 1000,
+            "segments": [{"begin": 0, "end": 1000, "text": "旧。"}],
+            "text": "旧。",
+        },
+    )
+    models = fake_model_set()
+    t = asr.transcribe(models.asr, wav)  # 旧版转写没有 speech_ratio / audio_ms：本地补算，不调模型
+    assert models.asr.calls == [] and t.low_speech is True and t.speech_ratio == pytest.approx(0.167, abs=0.01)
+    saved = json.loads(out.read_text(encoding="utf-8"))
+    assert saved["speech_ratio"] == t.speech_ratio and saved["low_speech"] is True and saved["audio_ms"] == 6000
+    _sine_wav(wav, 3)  # 换了一段音频（例如换了音源）：同模型也要重转写
+    t = asr.transcribe(models.asr, wav)
+    assert (
+        models.asr.calls == ["transcribe:audio.wav"] and json.loads(out.read_text(encoding="utf-8"))["audio_ms"] == 3000
+    )

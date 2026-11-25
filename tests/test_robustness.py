@@ -59,6 +59,18 @@ def test_unreadable_slides_note(lesson_dir, synthetic_video):  # noqa: F811
     text = (lesson_dir / "summary.md").read_text(encoding="utf-8")
     assert "张课件文字不清晰" in text
 
+    class UnreadableString(Unreadable):
+        def images_json(self, prompt, images, *, thinking=False, max_tokens=None):
+            out = super().images_json(prompt, images, thinking=thinking, max_tokens=max_tokens)
+            if "只判断画面类型" not in prompt:
+                out.data["readable"] = "false"  # 模型把布尔写成了字符串
+            return out
+
+    models = fake_model_set()
+    models.vision = UnreadableString("unreadable-str")  # 换模型名才会重新描述，走到字符串布尔这条路径
+    pipeline.run_lesson(None, "ID42", stages=stages, models=models, log=lambda *_: None)
+    assert (lesson_dir / "summary.md").read_text(encoding="utf-8").count("张课件文字不清晰") == 1
+
 
 def test_prune_video_removes_only_originals(lesson_dir, synthetic_video):  # noqa: F811
     (lesson_dir / "VGA_640.mp4").write_bytes(b"x")

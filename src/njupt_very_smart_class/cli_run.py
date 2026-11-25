@@ -77,7 +77,9 @@ def run(
     prune_video: Annotated[
         bool,
         typer.Option(
-            "--prune-video", help="处理完后删除 mp4 原件，保留 wav / 关键帧 / *_640.mp4", rich_help_panel="阶段"
+            "--prune-video",
+            help="处理完后删除 mp4 原件（本次有阶段失败则不删），保留 wav / 关键帧 / *_640.mp4",
+            rich_help_panel="阶段",
         ),
     ] = False,
     no_skip_done: Annotated[
@@ -94,7 +96,9 @@ def run(
         ),
     ] = False,
     # ---- 处理 ----
-    concurrency: Annotated[int, typer.Option("--concurrency", help="幻灯片描述并发数", rich_help_panel="处理")] = 4,
+    concurrency: Annotated[
+        int, typer.Option("--concurrency", help="幻灯片描述并发数", min=1, rich_help_panel="处理")
+    ] = 4,
     force_vision: Annotated[
         bool, typer.Option("--force-vision", help="忽略已有 frames.json，重新描述所有幻灯片", rich_help_panel="处理")
     ] = False,
@@ -103,7 +107,8 @@ def run(
         typer.Option("--omni-input", help="视频模式看哪路录像，可重复：VGA / Video1", rich_help_panel="处理"),
     ] = None,
     omni_sample_seconds: Annotated[
-        float, typer.Option("--omni-sample-seconds", help="视频模式每多少秒取一帧", rich_help_panel="处理")
+        float,
+        typer.Option("--omni-sample-seconds", help="视频模式每多少秒取一帧", min=0.001, rich_help_panel="处理"),
     ] = 5.0,
     force_omni: Annotated[
         bool, typer.Option("--force-omni", help="忽略已有 a_result_*.json", rich_help_panel="处理")
@@ -145,6 +150,9 @@ def run(
     try:
         wanted = pipeline.parse_stages(stages)
         kinds = tuple(t.strip() for t in types.split(",") if t.strip())
+        bad_types = [k for k in kinds if k not in download.STREAM_TYPES]
+        if bad_types or not kinds:
+            raise typer.BadParameter(f"--types 只能包含 {', '.join(download.STREAM_TYPES)}，非法：{bad_types}")
         omni_inputs = tuple(omni_input or ["VGA"])
         bad_inputs = [k for k in omni_inputs if k not in download.STREAM_TYPES]
         if bad_inputs:
@@ -211,7 +219,7 @@ def run(
         emit_json({"ok": code == EXIT_OK, "exit_code": code, **payload})
         raise typer.Exit(code)
     if errors:
-        warn(f"完成但有阶段失败：{errors}（重跑同一命令可续上）")
+        warn(f"完成但有阶段失败：{errors}（重跑并带上这些阶段可续上；没请求的阶段沿用上次的结论）")
     else:
         log(f"[green]完成[/green] {report['lesson_dir'].name}  判定 {payload['verdict']}")
     for n in payload["notes"]:
@@ -249,13 +257,23 @@ def _client_or_fail():
 
 
 def _run_local(local: list[Path], wanted: tuple[str, ...], opts: pipeline.RunOptions, no_skip_done: bool) -> None:
-    videos = pipeline.discover_local(local)
-    if not videos:
+    found = pipeline.discover_local(local)
+    if not found:
         fail("--local 下没有找到课时目录（需含 meta.json）", EXIT_NO_MATCH)
+    videos = [v for v, _ in found]
+    lesson_dirs = {v.id: d for v, d in found}  # 就在给的目录上处理，不去数据目录里按 NewID 找
     wanted = tuple(s for s in wanted if s != "fetch")
     log(f"本地 {len(videos)} 节，阶段 {','.join(wanted)}")
     try:
-        report = pipeline.run_batch(None, videos, stages=wanted, opts=opts, log=log, skip_done=not no_skip_done)
+        report = pipeline.run_batch(
+            None,
+            videos,
+            stages=wanted,
+            opts=opts,
+            log=log,
+            skip_done=not no_skip_done,
+            lesson_dirs=lesson_dirs,
+        )
     except (ConfigError, BailianError) as exc:
         fail_pipeline_exc(exc)
     _finish_batch(report, "local")

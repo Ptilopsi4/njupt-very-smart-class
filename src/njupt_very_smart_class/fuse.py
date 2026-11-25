@@ -114,6 +114,8 @@ def fuse(
         "course_info": course_info,
         "segments": c.get("segments"),
         "transcript_chars": c.get("transcript_chars"),
+        "no_speech": c.get("no_speech"),
+        "reason": c.get("reason"),  # 没有转写的原因跟着走到 final.json，渲染 WARNING 不依赖当次运行的 errors
         "result": obj,
         "usage": result.usage,
         "cache_key": key,

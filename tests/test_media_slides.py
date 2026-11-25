@@ -69,8 +69,27 @@ def test_extract_slides_finds_scene_changes(synthetic_video, tmp_path):
         assert (out / s.file).exists()
     manifest = json.loads((out / "slides.json").read_text(encoding="utf-8"))
     assert manifest[0]["file"] == "slide_001.jpg" and manifest[0]["index"] == 1
-    assert extract_slides(synthetic_video, out) == slides  # 幂等读回
+    assert extract_slides(synthetic_video, out, threshold=0.2) == slides  # 同参数：幂等读回
     assert not (out / "raw").exists()
+
+
+def test_extract_slides_recuts_when_params_change(synthetic_video, tmp_path):
+    out = tmp_path / "slides"
+    three = extract_slides(synthetic_video, out)
+    assert len(three) == 3 and json.loads((out / "params.json").read_text(encoding="utf-8"))["max_slides"] == 150
+    one = extract_slides(synthetic_video, out, max_slides=1)  # 参数变了：重切，旧截图清掉
+    assert len(one) == 1 and not (out / "slide_002.jpg").exists()
+    assert extract_slides(synthetic_video, out, max_slides=1) == one  # 同参数：读回
+    assert len(extract_slides(synthetic_video, out)) == 3  # 改回默认也重切
+
+
+def test_extract_slides_legacy_manifest_counts_as_defaults(synthetic_video, tmp_path):
+    out = tmp_path / "slides"
+    slides = extract_slides(synthetic_video, out)
+    (out / "params.json").unlink()  # 旧版没记参数
+    before = (out / "slide_001.jpg").stat().st_mtime_ns
+    assert extract_slides(synthetic_video, out) == slides and (out / "params.json").exists()
+    assert (out / "slide_001.jpg").stat().st_mtime_ns == before  # 按默认值看待，没有重切
 
 
 def test_extract_slides_fills_long_gaps(synthetic_video, tmp_path):

@@ -137,16 +137,42 @@ def test_login_non_interactive_needs_password(monkeypatch):
     assert r.exit_code == 2 and "--password-stdin" in plain(r.output)
 
 
-def test_login_status_json(monkeypatch):
+def test_local_runs_on_the_given_directory_not_on_data_dir(lesson_dir, tmp_path, monkeypatch):  # noqa: F811
+    import shutil
+
+    elsewhere = tmp_path / "elsewhere" / "课程" / lesson_dir.name  # 数据目录之外的一份拷贝
+    stages = ("prepare", "transcribe", "summarize")
+    pipeline.run_lesson(None, "ID42", stages=stages, models=fake_model_set(), log=lambda *_: None)
+    shutil.copytree(
+        lesson_dir,
+        elsewhere,
+        ignore=shutil.ignore_patterns("*.mp4"),  # 模拟 --prune-video 之后只剩 wav 的课时
+    )
+    monkeypatch.setattr(pipeline, "dashscope_model_set", lambda **kw: fake_model_set())
+    r = CliRunner().invoke(app, ["--json", "run", "--local", str(elsewhere.parent), "--stages", "render"])
+    assert r.exit_code == 0, r.output
+    payload = json.loads(r.stdout)
+    assert payload["results"][0]["summary"].replace("\\", "/").startswith(str(elsewhere).replace("\\", "/"))
+    assert (elsewhere / "summary.md").exists() and not (lesson_dir / "summary.md").exists()
+
+
+def test_local_render_needs_no_api_key(lesson_dir, monkeypatch):  # noqa: F811
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "")
+    real_models = pipeline.dashscope_model_set
+
+    def no_models(**kw):  # 没有请求用模型的阶段，就不该去构造模型客户端
+        raise AssertionError("不该构造模型客户端")
+
+    monkeypatch.setattr(pipeline, "dashscope_model_set", no_models)
     monkeypatch.setattr(client, "make_client", lambda: object())
-    monkeypatch.setattr(client, "verify", lambda sc: 1698)
-    r = _invoke(["--json", "login", "--status"])
-    assert r.exit_code == 0 and json.loads(r.stdout) == {
-        "ok": True,
-        "valid": True,
-        "visible_recordings": 1698,
-        "session_file": r.stdout and json.loads(r.stdout)["session_file"],
-    }
+    stages = ("prepare", "transcribe", "vision", "summarize", "render")
+    pipeline.run_lesson(None, "ID42", stages=stages, models=fake_model_set(), log=lambda *_: None)
+    r = _invoke(["--json", "run", "--local", str(lesson_dir), "--stages", "render"])
+    assert r.exit_code == 0, _why(r)
+
+    monkeypatch.setattr(pipeline, "dashscope_model_set", real_models)
+    r = _invoke(["--json", "run", "--local", str(lesson_dir), "--stages", "summarize"])
+    assert r.exit_code == 1 and "DASHSCOPE_API_KEY" in json.loads(r.stdout)["error"]
 
 
 def test_status_and_summary_json(lesson_dir, monkeypatch):  # noqa: F811

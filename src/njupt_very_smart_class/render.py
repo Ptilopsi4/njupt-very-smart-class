@@ -9,6 +9,8 @@ from collections.abc import Iterable
 from datetime import datetime
 from pathlib import Path
 
+from .vision import is_courseware
+
 
 def _fmt_ms(ms: int) -> str:
     s = int(ms) // 1000
@@ -64,7 +66,7 @@ def _as_list(value) -> list:
 
 
 def _pick_key_slides(frames: list[dict], limit: int = 10) -> list[dict]:
-    cw = [f for f in frames if f.get("is_courseware") or f.get("kind") == "slide"]
+    cw = [f for f in frames if is_courseware(f)]
     if len(cw) <= limit:
         return cw
     step = len(cw) / limit
@@ -98,7 +100,10 @@ def render_summary(
     notes: list[str] | None = None,
     errors: dict[str, str] | None = None,
 ) -> Path:
-    """summary：c_result 或 final；chunks 仅在没有融合结果时用于回退收集待复核条目。"""
+    """summary：c_result 或 final；chunks 仅在没有融合结果时用于回退收集待复核条目。
+
+    frames 里的帧可以带 dir 字段（如 slides_camera）：图片链接相对课时目录，默认在 slides/ 下。
+    """
     r = summary["result"]
     start = meta.get("StartTime", "")[:16].replace("T", " ")
     stop = meta.get("StopTime", "")[11:16]
@@ -115,7 +120,8 @@ def render_summary(
     )
     lines.append("")
     if not summary.get("segments"):
-        if (errors or {}).get("transcribe"):
+        # 转写失败的事实记在产物的 reason 里；旧产物没有 reason 时才看本次运行的 errors
+        if summary.get("reason") == "transcribe_failed" or (errors or {}).get("transcribe"):
             warning = (
                 "> [!WARNING] 本节课的语音转写阶段失败（见「处理提示」），摘要仅基于画面；修复后重跑同一命令可补上。"
             )
@@ -162,7 +168,7 @@ def render_summary(
             cap = f.get("title") or f.get("summary") or f.get("file", "")
             lines.append(f"**{t} {cap}**")
             lines.append("")
-            lines.append(f"![{cap}]({slides_rel}/{f['file']})")
+            lines.append(f"![{cap}]({f.get('dir') or slides_rel}/{f['file']})")
             lines.append("")
     lines.append("## 问答与互动")
     qa = _as_list(r.get("qa"))

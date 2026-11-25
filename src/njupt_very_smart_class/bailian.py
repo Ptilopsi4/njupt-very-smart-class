@@ -260,7 +260,8 @@ class BailianClient:
                 "success_action_status": (None, "200"),
                 "file": (name, fh),
             }
-            up = self.session.post(pol["upload_host"], files=files, timeout=self.timeout)
+            # 上传用的是临时凭证：API Key 不该随会话头发给 OSS 域（同下面的结果下载一样走裸 requests）
+        up = requests.post(pol["upload_host"], files=files, timeout=self.timeout)
         if up.status_code != 200:
             raise BailianError(f"上传 HTTP {up.status_code}: {up.text[:300]}")
         return f"oss://{key}"

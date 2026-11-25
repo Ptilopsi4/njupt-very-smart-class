@@ -64,6 +64,17 @@ def test_multi_segment_lesson_gets_merged_summary(lesson_dir):  # noqa: F811
     shutil.rmtree(lesson_dir / "Seg2")
 
 
+def test_merged_summary_keeps_hash_lines_in_code_fences(lesson_dir):  # noqa: F811
+    for name in ("Seg1", "Seg2"):
+        seg = lesson_dir / name
+        seg.mkdir()
+        (seg / "summary.md").write_text("# 课\n\n```\n# 注释\npwd\n```\n", encoding="utf-8")
+    meta = json.loads((lesson_dir / "meta.json").read_text(encoding="utf-8"))
+    text = pipeline.compose_lesson_summary(lesson_dir, meta).read_text(encoding="utf-8")
+    assert text.count("```\n# 注释\npwd\n```") == 2  # 围栏里的 # 是注释，不是标题
+    assert "## 第 2 段（Seg2）注释" not in text
+
+
 def test_dotenv_is_loaded_for_every_command(monkeypatch, tmp_path):
     import njupt_very_smart_class.auth as auth
     import njupt_very_smart_class.cli_auth as ca

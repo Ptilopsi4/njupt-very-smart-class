@@ -34,6 +34,7 @@ class Transcript:
     reason: str | None = None
     low_speech: bool = False  # 有效语音占比过低（噪音/音乐被当成话、或大部分时间没人说话）
     speech_ratio: float | None = None
+    audio_ms: int | None = None  # 转写时音频的时长：换了音源（时长变了）同一模型也要重转写
 
     @property
     def chars(self) -> int:
@@ -55,6 +56,7 @@ def load_transcript(path: Path) -> Transcript | None:
         reason=data.get("reason"),
         low_speech=bool(data.get("low_speech")),
         speech_ratio=data.get("speech_ratio"),
+        audio_ms=int(data["audio_ms"]) if data.get("audio_ms") is not None else None,
     )
 
 
@@ -88,15 +90,19 @@ def write_transcript(out: Path, data: dict) -> Transcript:
         reason=data.get("reason"),
         low_speech=bool(data.get("low_speech")),
         speech_ratio=data.get("speech_ratio"),
+        audio_ms=int(data["audio_ms"]) if data.get("audio_ms") is not None else None,
     )
 
 
-def write_empty_transcript(out: Path, *, model: str, reason: str, duration_ms: int = 0) -> Transcript:
+def write_empty_transcript(
+    out: Path, *, model: str, reason: str, duration_ms: int = 0, audio_ms: int | None = None
+) -> Transcript:
     return write_transcript(
         out,
         {
             "model": model,
             "duration_ms": duration_ms,
+            "audio_ms": audio_ms,
             "segments": [],
             "text": "",
             "usage": {},
@@ -107,34 +113,59 @@ def write_empty_transcript(out: Path, *, model: str, reason: str, duration_ms: i
 
 
 def transcribe(asr_model: AsrModel, wav: Path, *, silence_db: float = -50.0) -> Transcript:
-    """无人声（本地测静音，或服务端判定无词）时写空转写并标记 no_speech，而不是让流水线中断。"""
+    """无人声（本地测静音，或服务端判定无词）时写空转写并标记 no_speech，而不是让流水线中断。
+
+    缓存认模型和音频时长：换了模型，或 wav 换成了另一段（时长差超过 1 s），才重新转写。
+    """
     out = wav.with_name("transcript.json")
+    wav_ms = int(duration_seconds(probe(wav)) * 1000)
     cached = load_transcript(out)
-    if cached is not None and cached.model == asr_model.name:
-        return cached
+    if (
+        cached is not None
+        and cached.model == asr_model.name
+        and (cached.audio_ms is None or abs(cached.audio_ms - wav_ms) <= 1000)
+    ):
+        return _refresh_cached(cached, out, wav_ms)
     mean_db = audio_mean_volume_db(wav)
     if mean_db < silence_db:
-        return write_empty_transcript(out, model=asr_model.name, reason=f"audio_silent({mean_db:.1f} dB)")
+        return write_empty_transcript(
+            out, model=asr_model.name, reason=f"audio_silent({mean_db:.1f} dB)", audio_ms=wav_ms
+        )
     result = asr_model.transcribe(wav)
     if result.raw:
         wav.with_name("transcription_raw.json").write_text(
             json.dumps(result.raw, ensure_ascii=False, indent=1), encoding="utf-8"
         )
     if result.no_speech:
-        return write_empty_transcript(out, model=result.model, reason=result.reason or "asr_no_words")
+        return write_empty_transcript(out, model=result.model, reason=result.reason or "asr_no_words", audio_ms=wav_ms)
     data = {
         "model": result.model,
         "duration_ms": result.duration_ms,
+        "audio_ms": wav_ms,
         "segments": result.segments,
         "text": result.text,
         "usage": result.usage,
     }
-    wav_ms = duration_seconds(probe(wav)) * 1000
     if wav_ms > 0:
         ratio = min(result.duration_ms / wav_ms, 1.0)
         data["speech_ratio"] = round(ratio, 3)
         if ratio < 0.25:
             data["low_speech"] = True  # 45 分钟只有几分钟被识别为语音：要么噪音幻听，要么大半时间没人说话
+    return write_transcript(out, data)
+
+
+def _refresh_cached(cached: Transcript, out: Path, wav_ms: int) -> Transcript:
+    """旧版转写没有 audio_ms / speech_ratio：按现在的 wav 本地补算并写回，不调模型。"""
+    if cached.no_speech or (cached.audio_ms is not None and cached.speech_ratio is not None):
+        return cached
+    data = json.loads(out.read_text(encoding="utf-8"))
+    if data.get("audio_ms") is None:
+        data["audio_ms"] = wav_ms
+    if "speech_ratio" not in data and wav_ms > 0:
+        ratio = min(cached.duration_ms / wav_ms, 1.0)
+        data["speech_ratio"] = round(ratio, 3)
+        if ratio < 0.25:
+            data["low_speech"] = True
     return write_transcript(out, data)
 
 

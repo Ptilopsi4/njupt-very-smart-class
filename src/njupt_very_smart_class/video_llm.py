@@ -15,7 +15,7 @@ import subprocess
 from pathlib import Path
 
 from .media import SUBPROCESS_FLAGS, MediaError, duration_seconds, probe, require_ffmpeg, same_duration
-from .models import VideoModel
+from .models import VideoModel, cache_key
 
 SOURCE_DESC = {
     "VGA": "画面是教室电脑屏幕（课件、终端、演示）",
@@ -48,8 +48,8 @@ def transcode_for_omni(
     timeout: float = 3600,
 ) -> Path:
     """缩到 width 宽、降帧率、单声道 16 kHz AAC。视频 token 与像素数成正比，1024 宽是 640 宽的 2.5 倍。"""
-    if dst.exists() and same_duration(dst, src):
-        return dst
+    if dst.exists() and (not src.exists() or same_duration(dst, src)):
+        return dst  # 原件已被 --prune-video 删除时，转码件就是视频模式唯一的输入
     require_ffmpeg()
     if shutil.disk_usage(dst.parent).free < 1 << 30:
         raise MediaError("磁盘剩余不足 1 GB，跳过视频模式转码")
@@ -113,25 +113,35 @@ def analyze_video(
     timeout: float = 1800.0,
     source: str = "VGA",
 ) -> dict:
-    """out 已存在且参数一致时直接读回。"""
+    """out 已存在且模型、prompt、取帧间隔一致时直接读回。"""
     fps = round(1.0 / sample_seconds, 4)
     model = video_model.name
-    if out.exists() and not force:
-        cached = json.loads(out.read_text(encoding="utf-8"))
-        # 旧产物无 source 字段时视为 VGA
-        if cached.get("model") == model and cached.get("fps") == fps and (cached.get("source") or "VGA") == source:
-            return cached
     info = probe(video)
-    duration_min = duration_seconds(info) / 60
+    duration_s = duration_seconds(info)
     prompt = PROMPT.format(
-        duration=round(duration_min),
+        duration=round(duration_s / 60),
         source=SOURCE_DESC.get(source, SOURCE_DESC["VGA"]),
         sample=int(sample_seconds),
         course=course_info,
     )
+    # prompt 里的采样间隔只有整数秒，fps 要单独进键；输入视频以时长代表
+    key = cache_key(f"{model} fps={fps} dur={duration_s:.0f}s", prompt)
+    if out.exists() and not force:
+        cached = json.loads(out.read_text(encoding="utf-8"))
+        if "cache_key" in cached:
+            fresh = cached["cache_key"] == key
+        else:  # 旧产物只记了模型、fps、来源（无 source 字段时视为 VGA）
+            fresh = (
+                cached.get("model") == model and cached.get("fps") == fps and (cached.get("source") or "VGA") == source
+            )
+        if fresh:
+            return cached
     result = video_model.video_json(video, prompt, fps=fps, timeout=timeout)
     streams = info.get("streams", [])
     video_stream = next((s for s in streams if s.get("codec_type") == "video"), {})
+    data = dict(result.data)
+    if result.truncated:
+        data["_truncated"] = True  # 输出被 max_tokens 截断，JSON 已按闭合修复，末尾内容可能缺失
     a_result = {
         "model": model,
         "source": source,
@@ -140,11 +150,12 @@ def analyze_video(
             "file": video.name,
             "width": video_stream.get("width"),
             "height": video_stream.get("height"),
-            "duration_s": round(duration_seconds(info), 1),
+            "duration_s": round(duration_s, 1),
             "bytes": video.stat().st_size,
         },
-        "result": result.data,
+        "result": data,
         "usage": result.usage,
+        "cache_key": key,
     }
     out.write_text(json.dumps(a_result, ensure_ascii=False, indent=1), encoding="utf-8")
     return a_result

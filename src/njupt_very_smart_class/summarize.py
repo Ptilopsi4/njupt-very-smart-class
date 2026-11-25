@@ -60,7 +60,7 @@ def _fmt_ms(ms: int) -> str:
     return f"{s // 60:02d}:{s % 60:02d}"
 
 
-_BOOKKEEPING = ("usage", "cache_key")  # 分段笔记里的记账字段，不进 reduce 的 prompt
+_BOOKKEEPING = ("usage", "cache_key", "_truncated")  # 分段笔记里的记账字段，不进 reduce 的 prompt
 
 
 def glossary(frames: list[dict]) -> list[str]:
@@ -139,7 +139,9 @@ def map_chunks(
         def one(chunk: Chunk) -> dict:
             prompt = build(chunk)
             result = text_model.complete_json(prompt, thinking=True, max_tokens=16000)
-            obj, usage = result.data, result.usage
+            obj, usage = dict(result.data), result.usage
+            if result.truncated:
+                obj["_truncated"] = True
             return {
                 "index": chunk.index,
                 "start_ms": chunk.start_ms,

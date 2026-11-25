@@ -9,7 +9,7 @@ import shutil
 from PIL import Image
 
 from njupt_very_smart_class import pipeline, slides, vision
-from njupt_very_smart_class.models import ModelSet
+from njupt_very_smart_class.models import ModelOutput, ModelSet
 from tests.fakes import FakeVisionModel, fake_model_set
 from tests.test_pipeline import lesson_dir  # noqa: F401  夹具复用
 
@@ -90,3 +90,64 @@ def test_switch_without_camera_skips_screen_vision(lesson_dir, synthetic_video):
     assert any("无法切换视觉源" in line for line in logs)
     assert not any(c.startswith("vision:") for c in models.vision.calls)  # 只有判定调用
     assert (lesson_dir / "summary.md").exists()
+
+
+class _PartialTeaching(FakeVisionModel):
+    """前 n 次判定说是教学内容，之后说不是：落在「可用但不超过 5 张」的混合课分支。"""
+
+    def __init__(self, n: int = 3) -> None:
+        super().__init__("partial")
+        self.n, self.j = n, 0
+
+    def images_json(self, prompt, images, *, thinking=False, max_tokens=None):
+        if "只判断画面类型" in prompt:
+            self.j += 1
+            self._tick("judge:x")
+            teach = self.j <= self.n
+            return ModelOutput(
+                {"kind": "slide" if teach else "desktop", "is_teaching_content": teach},
+                {"prompt_tokens": 1, "completion_tokens": 1},
+                self.name,
+            )
+        return super().images_json(prompt, images, thinking=thinking, max_tokens=max_tokens)
+
+
+def _two_streams(seg) -> None:
+    (seg / "streams.json").write_text(
+        json.dumps(
+            [
+                {"kind": "VGA", "file": "VGA.mp4", "start_time": 21.0},
+                {"kind": "Video1", "file": "Video1.mp4", "start_time": 0.0},
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_mixed_lesson_links_camera_frames_to_their_own_dir(lesson_dir, synthetic_video):  # noqa: F811
+    shutil.copy(synthetic_video, lesson_dir / "Video1.mp4")
+    _two_streams(lesson_dir)
+    models = fake_model_set()
+    models.vision = _PartialTeaching(3)
+    stages = ("prepare", "vision", "transcribe", "summarize", "render")
+    opts = pipeline.RunOptions(camera_every_s=2.0)
+    pipeline.run_lesson(None, "ID42", stages=stages, opts=opts, models=models, log=lambda *_: None)
+    extra = json.loads((lesson_dir / "slides_camera" / "frames.json").read_text(encoding="utf-8"))
+    assert extra and extra[0]["source"] == "camera"
+    links = [ln for ln in (lesson_dir / "summary.md").read_text(encoding="utf-8").splitlines() if ln.startswith("![")]
+    assert any(ln.endswith(f"](slides_camera/{extra[0]['file']})") for ln in links)
+    assert (lesson_dir / "slides_camera" / extra[0]["file"]).exists()
+    same_name = [ln for ln in links if ln.endswith(f"](slides/{extra[0]['file']})")]
+    assert len(same_name) == 1  # 同名文件是屏幕流截图，只出现它自己那一条
+
+
+def test_frame_times_ignore_start_time(lesson_dir, synthetic_video):  # noqa: F811
+    shutil.copy(synthetic_video, lesson_dir / "Video1.mp4")
+    _two_streams(lesson_dir)
+    models = _fake_set("ad")
+    opts = pipeline.RunOptions(camera_every_s=2.0)
+    logs: list[str] = []
+    pipeline.run_lesson(None, "ID42", stages=("prepare", "vision"), opts=opts, models=models, log=logs.append)
+    frames = json.loads((lesson_dir / "slides" / "frames.json").read_text(encoding="utf-8"))
+    assert frames and all(f["audio_time"] == f["time"] for f in frames)  # StartTime 不是相对起点的偏移，不拿它换算
+    assert not any("偏移" in ln for ln in logs)

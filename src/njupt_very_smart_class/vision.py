@@ -17,6 +17,9 @@ from .media import duration_seconds, probe
 from .models import VisionModel
 from .slides import Slide, projection_roi, sample_frames
 
+# prompt 模板改了就加一：旧描述是按旧 prompt 生成的，不能继续当缓存用
+PROMPT_VERSION = 1
+
 # 学科无关的画面分类：教学内容 = 任何向课堂展示的讲授材料
 KINDS = (
     "slide（任何学科的课件页）",
@@ -132,7 +135,7 @@ def judge_screen(
     for t, path in picked:
         out = vision_model.images_json(CLASSIFY_PROMPT, [prepare_image(path, max_side=768)], thinking=False)
         kind = str(out.data.get("kind") or "other").split("（")[0].strip()
-        flag = out.data.get("is_teaching_content")
+        flag = as_bool(out.data.get("is_teaching_content"))
         if flag is None:
             flag = kind in TEACHING_KINDS
         results.append({"time": round(t, 1), "kind": kind, "teaching": bool(flag)})
@@ -156,24 +159,32 @@ def _stale(frames: dict[int, dict], slides: list[Slide], camera: bool, model: st
         f = frames.get(s.index)
         if f and (f.get("time") != s.time or f.get("file") != s.file or (f.get("source") == "camera") != camera):
             return True
-    return any(f.get("model") != model for f in frames.values())
+    # 旧版 frames.json 没记 prompt_version：按当前版本看待，升级不至于整课重算
+    return any(
+        f.get("model") != model or f.get("prompt_version", PROMPT_VERSION) != PROMPT_VERSION for f in frames.values()
+    )
 
 
 def _backfill(frames: dict[int, dict], offset_s: float, model: str | None = None) -> bool:
-    """旧版 frames.json 没有 audio_time / source / model 字段。
+    """旧版 frames.json 没有 source / model / prompt_version 字段，在这里补记；audio_time 是派生字段，每次按当前偏移重算。
 
     model 只在调用方明确给出当前模型时补记：旧描述按当前模型看待，升级后不至于整课重算。
     """
     changed = False
     for f in frames.values():
-        if "audio_time" not in f:
-            f["audio_time"] = round(float(f.get("time") or 0) + offset_s, 3)
+        # 描述本身与时间轴无关（prompt 里用的是帧在视频里的时间），所以换了偏移只改标注，不重新描述
+        audio_time = round(float(f.get("time") or 0) + offset_s, 3)
+        if f.get("audio_time") != audio_time:
+            f["audio_time"] = audio_time
             changed = True
         if "source" not in f:
             f["source"] = "screen"
             changed = True
         if model is not None and "model" not in f:
             f["model"] = model
+            changed = True
+        if "prompt_version" not in f:
+            f["prompt_version"] = PROMPT_VERSION
             changed = True
     return changed
 
@@ -189,15 +200,23 @@ def describe_slides(
     camera: bool = False,
     on_done: Callable[[dict], None] | None = None,
 ) -> list[dict]:
-    """offset_s：帧时间戳换算到音频时间轴的偏移。camera=True 时机位帧先裁投影区再送模型。"""
+    """offset_s：帧时间戳换算到音频时间轴的偏移。camera=True 时机位帧先裁投影区再送模型。
+
+    frames.json 只保留当前清单里的帧：重新切页后不在清单里的旧描述一并清掉。
+    """
     model = vision_model.name
     out = slide_dir / "frames.json"
     frames: dict[int, dict] = {} if force else load_frames(out)
-    if frames:
+    orphans = False
+    if slides:
+        wanted = {s.index for s in slides}
+        orphans = not wanted >= set(frames)
+        frames = {i: f for i, f in frames.items() if i in wanted}
+    if frames or orphans:
         filled = _backfill(frames, offset_s, model)
         if _stale(frames, slides, camera, model):
-            frames = {}  # 清单变了（换视觉源或改采样间隔）或换了视觉模型：旧描述不可信
-        elif filled:
+            frames = {}  # 清单变了（换视觉源或改采样间隔）或换了视觉模型 / prompt：旧描述不可信
+        elif filled or orphans:
             _save(out, frames)
     todo = [s for s in slides if s.index not in frames]
     prompt_tpl = CAMERA_PROMPT if camera else PROMPT
@@ -223,6 +242,7 @@ def describe_slides(
                 "file": s.file,
                 "source": "camera" if camera else "screen",
                 "model": model,
+                "prompt_version": PROMPT_VERSION,
                 "cropped": bool(crop),
                 **{
                     k: obj.get(k)
@@ -253,5 +273,25 @@ def describe_slides(
     return [frames[k] for k in sorted(frames)]
 
 
+def as_bool(value) -> bool | None:
+    """结构化输出只保证是 JSON：布尔偶尔会写成字符串（"false" / "True" / "否"）。认不出的返回 None。"""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        v = value.strip().lower()
+        if v in ("true", "yes", "y", "1", "是"):
+            return True
+        if v in ("false", "no", "n", "0", "否"):
+            return False
+    if isinstance(value, int):
+        return bool(value)
+    return None
+
+
+def is_courseware(f: dict) -> bool:
+    flag = as_bool(f.get("is_courseware"))
+    return flag is True or f.get("kind") == "slide"
+
+
 def courseware_frames(frames: list[dict]) -> list[dict]:
-    return [f for f in frames if f.get("is_courseware") or f.get("kind") == "slide"]
+    return [f for f in frames if is_courseware(f)]

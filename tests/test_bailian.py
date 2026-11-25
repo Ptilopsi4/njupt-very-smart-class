@@ -96,13 +96,10 @@ def test_chat_non_200_raises(client):
         client.chat("m", [])
 
 
-def test_upload_temp_flow(client):
+def test_upload_temp_flow(client, monkeypatch):
     class _Upload:
         status_code = 200
         text = ""
-
-        def raise_for_status(self):
-            return None
 
     policy = {
         "data": {
@@ -117,23 +114,29 @@ def test_upload_temp_flow(client):
         }
     }
 
+    uploads: list[dict] = []
+
+    def fake_post(url, files=None, timeout=None, **kw):
+        uploads.append({"url": url, "files": list(files), "headers": kw.get("headers")})
+        return _Upload()
+
     class _S(_FakeSession):
         def get(self, url, headers=None, params=None, timeout=None):
             self.requests.append({"url": url, "params": params})
             return _FakeResponse(200, policy)
 
-        def post(self, url, files=None, timeout=None, **kw):
-            self.requests.append({"url": url, "files": list(files)})
-            return _Upload()
+        def post(self, *a, **kw):  # 上传不该经过带 Authorization 的会话
+            raise AssertionError("OSS 上传不能复用带 API Key 的 session")
 
+    import njupt_very_smart_class.bailian as B
+
+    monkeypatch.setattr(B.requests, "post", fake_post)
     client.session = _S([])
-    f = client.__class__  # noqa: F841  仅确认类型
-    import pathlib
-
     path = pathlib.Path(__file__)
     url = client.upload_temp(path, "模型 中文")
     assert url.startswith("oss://d/x/") and "模型" not in url
     assert client.session.requests[0]["params"] == {"action": "getPolicy", "model": "模型 中文"}
+    assert uploads[0]["url"] == "https://oss.example" and "OSSAccessKeyId" in uploads[0]["files"]
 
 
 def test_missing_key_raises(tmp_path, monkeypatch):
@@ -282,6 +285,7 @@ def test_video_adapter_uploads_then_chats_with_video_url(monkeypatch, tmp_path):
 
     s = _policy_session()
     c = _client_with(s)
+    monkeypatch.setattr(bailian.requests, "post", s.post)  # OSS 上传走裸 requests.post，这里转回假会话
     video = tmp_path / "v.mp4"
     video.write_bytes(b"x" * 10)
     out = bailian.DashScopeVideoModel(c, "omni").video_json(video, "分析", fps=0.2, timeout=7)
@@ -310,6 +314,7 @@ def test_asr_adapter_full_flow_and_no_words(monkeypatch, tmp_path):
     audio = tmp_path / "audio.wav"
     audio.write_bytes(b"RIFF")
     s = _policy_session()
+    monkeypatch.setattr(bailian.requests, "post", s.post)  # OSS 上传走裸 requests.post，这里转回假会话
     c = _client_with(s)
     out = bailian.DashScopeAsrModel(c, "asr-m").transcribe(audio)
     assert (
@@ -322,6 +327,7 @@ def test_asr_adapter_full_flow_and_no_words(monkeypatch, tmp_path):
     assert submit["headers"]["X-DashScope-Async"] == "enable"
     assert submit["json"]["input"]["file_urls"] == ["oss://d/x/audio.wav"]
     s2 = _policy_session(transcribe_no_words=True)
+    monkeypatch.setattr(bailian.requests, "post", s2.post)
     out2 = bailian.DashScopeAsrModel(_client_with(s2), "asr-m").transcribe(audio)
     assert out2.no_speech and out2.reason == "asr_no_words" and out2.segments == []
 

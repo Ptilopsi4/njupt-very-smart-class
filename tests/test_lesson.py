@@ -10,7 +10,7 @@ import pytest
 import requests
 from typer.testing import CliRunner
 
-from njupt_very_smart_class import lesson, media
+from njupt_very_smart_class import client, download, lesson, media
 from njupt_very_smart_class.cli import app
 
 runner = CliRunner()
@@ -135,6 +135,9 @@ def test_classify_lesson(data_root):
     assert pipeline.classify_lesson(d) == "c_only"
     (d / "final.json").write_text(json.dumps({"result": {"chapters": [{}], "key_points": ["k"]}}), encoding="utf-8")
     assert pipeline.classify_lesson(d) == "ok"
+    (d / "c_result.json").unlink()
+    (d / "final.json").unlink()
+    assert pipeline.classify_lesson(d) == "c_only"  # 什么材料都没有：不判"空教室"
 
 
 def test_fetch_lesson_minimal_skips_video1_when_vga_has_audio(range_server, tmp_path, synthetic_video):
@@ -170,5 +173,89 @@ def test_fetch_lesson_minimal_skips_video1_when_vga_has_audio(range_server, tmp_
         _, out_dir, segments = L.fetch_lesson(sc, "M1", types=("VGA", "Video1"), minimal=True)
     finally:
         L.resolve_new_id, L.paths.lesson_dir = orig_resolve, orig_dir
-    assert [s.kind for s in segments[0].sources] == ["VGA"]
+    # sources 是录像实际有的流；kept 是 minimal 之后磁盘上有的
+    assert [s.kind for s in segments[0].sources] == ["VGA", "Video1"]
+    assert segments[0].kept == ("VGA.mp4",)
     assert (out_dir / "VGA.mp4").exists() and not (out_dir / "Video1.mp4").exists()
+
+
+def test_prepare_uses_wav_when_originals_pruned(data_root, synthetic_video):
+    d = _make_lesson(data_root, "IDP", synthetic_video)
+    lesson.prepare_lesson(d)
+    for name in ("VGA.mp4", "Video1.mp4"):
+        (d / name).unlink()
+    results = lesson.prepare_lesson(d)
+    assert results[0].audio_source == "audio.wav" and abs(results[0].audio_seconds - 9.0) < 0.3
+
+
+def test_prepare_after_prune_with_broken_wav_raises(data_root, synthetic_video):
+    d = _make_lesson(data_root, "IDB", synthetic_video)
+    lesson.prepare_lesson(d)
+    for name in ("VGA.mp4", "Video1.mp4"):
+        (d / name).unlink()
+    (d / "audio.wav").write_bytes((d / "audio.wav").read_bytes()[:1000])
+    with pytest.raises(RuntimeError, match="audio.wav"):
+        lesson.prepare_lesson(d)
+
+
+def test_fetch_lesson_keeps_earlier_probe_entries(range_server, tmp_path, synthetic_video):
+    from datetime import datetime
+
+    from njupt_very_smart_class.vendor.njupt_smartclass import (
+        NjuptSmartclassVideoInfo,
+        NjuptSmartclassVideoSegmentInfo,
+    )
+
+    pub = tmp_path / "pub"
+    pub.mkdir()
+    (pub / "index.xml").write_bytes(b'<Info><Video1 Src="Video1.mp4"/><VGA Src="VGA.mp4"/></Info>')
+    shutil.copy(synthetic_video, pub / "Video1.mp4")
+    shutil.copy(synthetic_video, pub / "VGA.mp4")
+    info = NjuptSmartclassVideoInfo(
+        id="M2",
+        title="t",
+        start_time=datetime(2026, 1, 1),
+        stop_time=datetime(2026, 1, 1),
+        course_name="c",
+        segments=[NjuptSmartclassVideoSegmentInfo(index_file_uri=f"{range_server}/pub/index.xml")],
+    )
+    out = tmp_path / "lesson"
+    out.mkdir()
+    shutil.copy(synthetic_video, out / "VGA.mp4")  # 上次下载的屏幕流还在
+    (out / "probe.json").write_text(
+        json.dumps({"VGA.mp4": {"format": {"duration": "9.0"}, "streams": []}, "Video2.mp4": {"streams": []}}),
+        encoding="utf-8",
+    )
+    sc = types.SimpleNamespace(session=requests.Session())
+    import njupt_very_smart_class.lesson as L
+
+    orig_resolve, orig_dir = L.resolve_new_id, L.paths.lesson_dir
+    L.resolve_new_id = lambda sc, new_id: info
+    L.paths.lesson_dir = lambda course, new_id: out
+    try:
+        L.fetch_lesson(sc, "M2", types=("Video1",), minimal=False)  # 切机位时补下机位流
+    finally:
+        L.resolve_new_id, L.paths.lesson_dir = orig_resolve, orig_dir
+    probes = json.loads((out / "probe.json").read_text(encoding="utf-8"))
+    assert set(probes) == {"VGA.mp4", "Video1.mp4"}  # 旧条目保留，已不在磁盘上的不保留
+
+
+def test_cli_fetch_reports_missing_and_skipped(monkeypatch, data_root, synthetic_video):
+    d = _make_lesson(data_root, "IDF", synthetic_video)
+    seg = download.Segment(
+        index_path=d / "index.xml",
+        sources=[download.StreamSource("VGA", "u"), download.StreamSource("Video1", "u")],
+        kept=("VGA.mp4",),
+    )
+    info = types.SimpleNamespace(id="IDF", title="t", course_name="c")
+    (d / "Video1.mp4").unlink()  # 模拟 minimal：机位流在录像里有，但没下
+    monkeypatch.setattr(client, "make_client", lambda: object())
+    monkeypatch.setattr(lesson, "fetch_lesson", lambda sc, new_id, **kw: (info, d, [seg]))
+    r = runner.invoke(app, ["--json", "fetch", "IDF"])
+    assert r.exit_code == 0, r.output
+    payload = json.loads(r.stdout)
+    assert payload["missing"] == [] and payload["skipped"] == ["Video1"]
+    assert [s["kind"] for s in payload["streams"]] == ["VGA"]
+    r = runner.invoke(app, ["fetch", "IDF"])
+    assert "缺少流" not in r.output and "未下载" in r.output  # 主动不下不等于教室没有
+    assert re.search(r"\d\.\d min, video", r.output)  # 流信息来自分段的 probe.json

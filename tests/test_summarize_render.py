@@ -199,3 +199,26 @@ def test_render_fused_summary(tmp_path):
     assert "## 课堂演示" in text and "```\nvar1=12; (echo $var1)\n```" in text  # 屏幕内容不做语言标注
     assert "## ASR 勘误" in text and "| 06:10 | apple | echo |" in text
     assert "- x" in text and "chunk-level item" not in text
+
+
+def test_render_warning_follows_persisted_reason(tmp_path):
+    # 之后只重渲染时本次运行没有 errors：转写失败的事实记在 c_result.reason 里
+    c = {
+        "model": "m",
+        "course": "c",
+        "segments": 0,
+        "transcript_chars": 0,
+        "no_speech": True,
+        "reason": "transcribe_failed",
+        "result": {},
+    }
+    text = render.render_summary(c, META, [], tmp_path / "s.md").read_text(encoding="utf-8")
+    assert "转写阶段失败" in text and "老师未用麦" not in text
+    silent = dict(c, reason="audio_silent(-61.0 dB)")
+    text = render.render_summary(silent, META, [], tmp_path / "s2.md").read_text(encoding="utf-8")
+    assert "老师未用麦" in text and "转写阶段失败" not in text
+    legacy = {k: v for k, v in c.items() if k != "reason"}  # 旧产物没有 reason：才回退看本次的 errors
+    text = render.render_summary(legacy, META, [], tmp_path / "s3.md", errors={"transcribe": "x"}).read_text(
+        encoding="utf-8"
+    )
+    assert "转写阶段失败" in text

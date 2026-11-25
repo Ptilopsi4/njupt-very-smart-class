@@ -4,6 +4,7 @@ transcribe 失败时仍渲染仅基于画面的摘要，修好后重跑补上。
 SPDX-License-Identifier: AGPL-3.0-or-later
 """
 
+import dataclasses
 import json
 
 from PIL import Image
@@ -260,10 +261,107 @@ def test_transcribe_failure_still_renders_and_recovers(lesson_dir, synthetic_vid
     assert pipeline.lesson_done(lesson_dir, stages)
 
 
-def test_classify_lesson_distinguishes_asr_failure(lesson_dir):  # noqa: F811
+def test_classify_lesson_reads_asr_failure_from_artifact(lesson_dir):  # noqa: F811
     (lesson_dir / "c_result.json").write_text(
         json.dumps({"no_speech": True, "reason": "transcribe_failed", "result": {}}), encoding="utf-8"
     )
-    assert pipeline.classify_lesson(lesson_dir) == "empty+no_speech"
+    assert pipeline.classify_lesson(lesson_dir) == "asr_failed"  # 不看 state.errors：之后的局部重跑会把它冲掉
     (lesson_dir / "state.json").write_text(json.dumps({"errors": {"transcribe": "x"}}), encoding="utf-8")
-    assert pipeline.classify_lesson(lesson_dir) == "asr_failed"
+    (lesson_dir / "c_result.json").unlink()
+    assert pipeline.classify_lesson(lesson_dir) == "c_only"  # 没有材料就不下"空教室"的结论
+
+
+# ---------- 输出被截断 / 布尔写成字符串 / 缓存键 ----------
+class _Truncating(FakeTextModel):
+    def complete_json(self, prompt, **kw):
+        out = super().complete_json(prompt, **kw)
+        return dataclasses.replace(out, truncated=True) if self.calls[-1].split(":")[0] in ("reduce", "fuse") else out
+
+
+class _TruncVideo(FakeVideoModel):
+    def video_json(self, video, prompt, *, fps, timeout=None):
+        return dataclasses.replace(super().video_json(video, prompt, fps=fps, timeout=timeout), truncated=True)
+
+
+def test_truncated_output_is_recorded_and_reported(lesson_dir, synthetic_video):  # noqa: F811
+    ms = _a_set()
+    ms.text, ms.video = _Truncating("fake-text"), _TruncVideo("fake-video")  # 与 _a_set() 同名，第二次才能命中缓存
+    pipeline.run_lesson(None, "ID42", stages=ALL[1:], models=ms, log=lambda *_: None)
+    assert _load(lesson_dir / "a_result_VGA.json")["result"]["_truncated"] is True
+    assert _load(lesson_dir / "c_result.json")["result"]["_truncated"] is True
+    assert _load(lesson_dir / "final.json")["result"]["_truncated"] is True
+    tips = (lesson_dir / "summary.md").read_text(encoding="utf-8").split("## 处理提示")[1]
+    assert tips.count("截断") == 3  # 转写模式汇总、视频模式、融合各一条
+
+    again = _a_set()  # 全部命中缓存再渲染一遍：提示仍然在
+    pipeline.run_lesson(None, "ID42", stages=ALL[1:], models=again, log=lambda *_: None)
+    assert again.text.calls == [] and again.video.calls == []
+    tips = (lesson_dir / "summary.md").read_text(encoding="utf-8").split("## 处理提示")[1]
+    assert tips.count("截断") == 3
+
+
+def test_as_bool_tolerates_string_booleans():
+    assert vision.as_bool("false") is False and vision.as_bool("True") is True and vision.as_bool("是") is True
+    assert vision.as_bool(True) is True and vision.as_bool(None) is None and vision.as_bool("maybe") is None
+    assert vision.courseware_frames([{"is_courseware": "false", "kind": "desktop"}]) == []
+    assert vision.courseware_frames([{"is_courseware": "true"}]) and vision.courseware_frames([{"kind": "slide"}])
+
+
+class _StringBool(FakeVisionModel):
+    def images_json(self, prompt, images, *, thinking=False, max_tokens=None):
+        out = super().images_json(prompt, images, thinking=thinking, max_tokens=max_tokens)
+        out.data["is_teaching_content"] = "false"
+        return out
+
+
+def test_judge_screen_treats_string_false_as_false(lesson_dir):  # noqa: F811
+    from njupt_very_smart_class.slides import Slide
+
+    (lesson_dir / "slides").mkdir(exist_ok=True)
+    manifest = [{"index": i + 1, "time": float(i * 10), "file": f"slide_{i + 1:03d}.jpg"} for i in range(8)]
+    for i in range(8):
+        Image.new("RGB", (64, 64), (i * 10, 0, 0)).save(lesson_dir / "slides" / f"slide_{i + 1:03d}.jpg")
+    model = _StringBool("slide")  # kind 写的是 slide，但明确说了不是教学内容
+    v = vision.judge_screen(model, lesson_dir, [Slide(**d) for d in manifest], lesson_dir / "VGA.mp4")
+    assert v["usable"] is False and v["teaching"] == 0
+
+
+def test_frames_record_prompt_version_and_drop_orphans(tmp_path):
+    d, slide_list = _slide_dir(tmp_path)
+    frames = vision.describe_slides(FakeVisionModel("v1"), d, slide_list)
+    assert [f["prompt_version"] for f in frames] == [vision.PROMPT_VERSION] * 2
+    kept = vision.describe_slides(FakeVisionModel("v1"), d, slide_list[:1])  # 清单里只剩第 1 张
+    assert [f["index"] for f in kept] == [1]
+    assert [f["index"] for f in _load(d / "frames.json")] == [1]
+
+
+def test_frame_audio_time_is_derived_each_run(tmp_path):
+    d, slide_list = _slide_dir(tmp_path)
+    vision.describe_slides(FakeVisionModel("v1"), d, slide_list, offset_s=-21.0)
+    same = FakeVisionModel("v1")
+    frames = vision.describe_slides(same, d, slide_list, offset_s=0.0)
+    assert same.calls == []  # 只改时间标注，不重新描述
+    assert [f["audio_time"] for f in frames] == [s.time for s in slide_list]
+    assert [f["audio_time"] for f in _load(d / "frames.json")] == [s.time for s in slide_list]
+
+
+def test_analyze_video_cache_key_covers_input(synthetic_video, tmp_path):
+    from njupt_very_smart_class import video_llm
+
+    out = tmp_path / "a.json"
+    first = FakeVideoModel("v")
+    a = video_llm.analyze_video(first, synthetic_video, course_info="课 A", sample_seconds=5.0, out=out)
+    assert a["cache_key"] and len(first.calls) == 1
+    same = FakeVideoModel("v")
+    video_llm.analyze_video(same, synthetic_video, course_info="课 A", sample_seconds=5.0, out=out)
+    assert same.calls == []
+    other = FakeVideoModel("v")
+    video_llm.analyze_video(other, synthetic_video, course_info="课 B", sample_seconds=5.0, out=out)
+    assert len(other.calls) == 1  # prompt 变了
+    finer = FakeVideoModel("v")
+    video_llm.analyze_video(finer, synthetic_video, course_info="课 A", sample_seconds=5.5, out=out)
+    assert len(finer.calls) == 1 and _load(out)["fps"] == 0.1818  # 取帧间隔变了，prompt 里的整数没变也要重算
+    _strip(out, "cache_key")
+    legacy = FakeVideoModel("v")
+    video_llm.analyze_video(legacy, synthetic_video, course_info="课 A", sample_seconds=5.5, out=out)
+    assert legacy.calls == []  # 旧产物沿用旧规则：模型、fps、来源一致就不重算
