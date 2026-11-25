@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from njupt_very_smart_class import download
 from njupt_very_smart_class.download import (
     StreamSource,
     download_file,
@@ -93,6 +94,51 @@ def test_download_part_complete_returns_416_path(session, range_server, tmp_path
     r = download_file(session, f"{range_server}/d.bin", dest)
     assert r.resumed and dest.read_bytes() == payload
     assert not Path(str(dest) + ".part").exists()
+
+
+def test_download_4xx_is_not_retried(session, range_server, tmp_path, monkeypatch):
+    sleeps = []
+    monkeypatch.setattr(download.time, "sleep", lambda s: sleeps.append(s))
+    calls = []
+    real_get = session.get
+
+    def counting_get(url, **kw):
+        calls.append(url)
+        return real_get(url, **kw)
+
+    monkeypatch.setattr(session, "get", counting_get)
+    dest = tmp_path / "out" / "gone.mp4"
+    dest.parent.mkdir()
+    with pytest.raises(RuntimeError, match="HTTP 404") as excinfo:
+        download_file(session, f"{range_server}/gone.mp4?authKey=SECRET", dest)
+    assert len(calls) == 1 and sleeps == []  # 4xx 重试多少次都一样
+    assert "SECRET" not in str(excinfo.value) and "清理" in str(excinfo.value)
+
+
+def test_download_5xx_is_retried(session, tmp_path, monkeypatch):
+    import requests as rq
+
+    calls, sleeps = [], []
+
+    class _Resp:
+        status_code = 503
+        headers = {}
+        text = "busy"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def raise_for_status(self):
+            raise rq.HTTPError("503")
+
+    monkeypatch.setattr(session, "get", lambda url, **kw: calls.append(url) or _Resp())
+    monkeypatch.setattr(download.time, "sleep", lambda s: sleeps.append(s))
+    with pytest.raises(RuntimeError, match="重试"):
+        download_file(session, "https://h.example/x.mp4", tmp_path / "o" / "x.mp4")
+    assert len(calls) == 11 and len(sleeps) == 10
 
 
 def test_fetch_segments_missing_media_error_hides_signature(session, range_server, tmp_path):

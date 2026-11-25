@@ -42,7 +42,12 @@ def _float(value: str | None) -> float:
 @dataclasses.dataclass(frozen=True)
 class Segment:
     index_path: Path
-    sources: list[StreamSource]
+    sources: list[StreamSource]  # 录像实际有的流（index.xml 里 Src 非空且在 types 内）
+    kept: tuple[str, ...] = ()  # fetch 之后磁盘上有的流文件名；minimal 模式可能主动不下 Video1
+
+
+class DownloadHTTPError(RuntimeError):
+    """服务端明确拒绝（4xx）：重试多少次结果都一样。"""
 
 
 @dataclasses.dataclass
@@ -143,6 +148,12 @@ def download_file(
                     part.rename(dest)
                     return DownloadResult(dest, start, resumed=True, skipped=False)
                 if resp.status_code not in (200, 206):
+                    if resp.status_code < 500 and resp.status_code not in (408, 429):
+                        # 报错里不带签名参数
+                        raise DownloadHTTPError(
+                            f"下载 HTTP {resp.status_code}：{url.split('?', 1)[0]}\n"
+                            "该录像的媒体文件可能已被平台清理（常见于老录像），请换近期的录播"
+                        )
                     resp.raise_for_status()
                 if resp.status_code == 200 and start:
                     # 服务端不支持 Range，从头来
