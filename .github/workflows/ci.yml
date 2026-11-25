@@ -13,8 +13,10 @@ jobs:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      # 两个 action 都要跑在 Node 24 上（Node 20 的版本会被 runner 标记弃用）。
+      # setup-uv 从 v8 起不再维护 vN 这样的浮动标签，只能钉到完整版本号。
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.4.0
         with:
           python-version: "3.12"
       - name: Install ffmpeg (Linux)
