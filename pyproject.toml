@@ -1,0 +1,64 @@
+[project]
+name = "njupt-very-smart-class"
+version = "0.1.0"
+description = "NJUPT 智慧课堂录播 → 视频理解 → 带时间戳的课堂摘要"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "AGPL-3.0-or-later" }
+authors = [{ name = "Ptilopsi4" }]
+keywords = ["njupt", "smartclass", "lecture", "video-understanding", "notes", "qwen"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Education",
+    "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Education",
+    "Topic :: Multimedia :: Video",
+]
+dependencies = [
+    "requests>=2.32",
+    "pycryptodome>=3.23",
+    "typer>=0.15",
+    "pillow>=11",
+    "python-dotenv>=1.0",
+]
+
+[project.urls]
+Repository = "https://github.com/Ptilopsi4/njupt-very-smart-class"
+Issues = "https://github.com/Ptilopsi4/njupt-very-smart-class/issues"
+
+[project.scripts]
+vsc = "njupt_very_smart_class.cli:app"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "ruff>=0.9",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/njupt_very_smart_class"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+extend-exclude = ["src/njupt_very_smart_class/vendor"]
+
+[tool.ruff.lint.per-file-ignores]
+# prompt 文本按自然段成行，不做行宽限制
+"src/njupt_very_smart_class/summarize.py" = ["E501"]
+"src/njupt_very_smart_class/vision.py" = ["E501"]
+"src/njupt_very_smart_class/fuse.py" = ["E501"]
+"src/njupt_very_smart_class/video_llm.py" = ["E501"]
+# 命令声明行（Annotated 选项）天然很长，不做行宽限制
+"src/njupt_very_smart_class/cli_auth.py" = ["E501"]
+"src/njupt_very_smart_class/cli_lessons.py" = ["E501"]
+"src/njupt_very_smart_class/cli_run.py" = ["E501"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
