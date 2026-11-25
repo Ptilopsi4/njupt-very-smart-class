@@ -24,8 +24,18 @@ class AuthError(RuntimeError):
     pass
 
 
-def new_session() -> requests.Session:
-    session = requests.Session()
+class TimeoutSession(requests.Session):
+    """vendor 客户端的请求都不带 timeout；在这里统一兜底，服务端不应答时不会无限等。显式传入的 timeout 优先。"""
+
+    default_timeout = 30.0
+
+    def request(self, method: str, url, **kwargs) -> requests.Response:
+        kwargs.setdefault("timeout", self.default_timeout)
+        return super().request(method, url, **kwargs)
+
+
+def new_session() -> TimeoutSession:
+    session = TimeoutSession()
     session.headers["User-Agent"] = USER_AGENT
     return session
 

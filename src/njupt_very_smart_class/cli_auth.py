@@ -157,8 +157,10 @@ def login(
     try:
         if status:
             try:
-                total = client.verify(client.NjuptSmartclass(session))
-            except (AuthError, ValueError) as exc:
+                total = client.verify(client.make_client())  # 与 doctor 同一条路：先加载 data/.session.json
+            except AuthError as exc:
+                fail(str(exc), EXIT_AUTH, valid=False)
+            except ValueError as exc:
                 fail(f"会话无效：{exc}", EXIT_AUTH, valid=False)
             succeed_or_text(
                 {"valid": True, "visible_recordings": total, "session_file": str(auth.session_file())},

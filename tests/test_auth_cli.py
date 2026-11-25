@@ -136,3 +136,38 @@ def test_semester_bounds_parsing(monkeypatch):
     assert cli._semester_bounds(sc, "2026-2027 学年第 1 学期") == ("2026-08-31", "2027-01-15")
     with pytest.raises(typer.BadParameter):
         cli._semester_bounds(sc, "1999-2000-1")
+
+
+def test_new_session_sets_default_timeout(monkeypatch):
+    seen = []
+    monkeypatch.setattr(requests.Session, "request", lambda self, method, url, **kw: seen.append(kw.get("timeout")))
+    s = auth.new_session()
+    s.get("https://smartclass.invalid/config.json")
+    s.post("https://i.njupt.edu.cn/ssoLogin/login", json={})
+    s.get("https://smartclass.invalid/x", timeout=5)
+    assert seen == [30.0, 30.0, 5]
+
+
+def test_login_status_uses_saved_session(monkeypatch, tmp_path):
+    from typer.testing import CliRunner
+
+    from njupt_very_smart_class import client
+    from njupt_very_smart_class.cli import app
+
+    monkeypatch.setattr(auth, "session_file", lambda: tmp_path / ".session.json")
+    seen = {}
+
+    def verify(sc):
+        seen["cookies"] = len(sc.session.cookies)
+        return 1698
+
+    monkeypatch.setattr(client, "verify", verify)
+    r = CliRunner().invoke(app, ["--json", "login", "--status"])
+    assert r.exit_code == 3, r.output  # 没有会话文件：直接判无效，不拿空 session 去问接口
+    assert json.loads(r.stdout)["valid"] is False and "cookies" not in seen
+    s = auth.new_session()
+    s.cookies.set("ASP.NET_SessionId", "abc", domain="njupt.smartclass.cn", path="/")
+    auth.save_session(s)
+    r = CliRunner().invoke(app, ["--json", "login", "--status"])
+    assert r.exit_code == 0, r.output
+    assert seen["cookies"] == 1 and json.loads(r.stdout)["visible_recordings"] == 1698
