@@ -72,10 +72,10 @@ uv run vsc summary 3f9a1c2e --print > notes.md      # 把笔记打印出来，�
 | 处理一节课 | `vsc run <编号>` |
 | 处理一门课 | 先用 `vsc list --semester current --title 编译原理` 看有多少节，再 `vsc run --semester current --title 编译原理 --limit 5` |
 | 节约模型费用 |  `--no-a-path`：不看整段视频，只靠转写和课件 |
-| 继续处理已下载的课 | `vsc run --local data/<课程名>`，不需要登录 |
+| 继续处理已下载的课 | `vsc run --local data/<课程名>`，不需要登录；课时目录放在别处也行，就在给出的目录里处理 |
 | 单独运行特定步骤 |  `--stages transcribe,vision,summarize,render` |
 | 查看处理进度 | `vsc status <编号>` |
-| 磁盘空间管理 |  `--prune-video`（处理完删掉 mp4 原件）；`--min-free 2GB` 设定下载前的磁盘下限 |
+| 磁盘空间管理 |  `--prune-video`（各步都成功后删掉 mp4 原件，有一步失败则不删）；删后仍能在本地重跑摘要，重算视频模式用留下的缩小版录像，要重新切课件页需再 `fetch`。`--min-free 2GB` 设定下载前的磁盘下限 |
 | 更换模型 |  `--model-text`、`--model-vision`、`--model-asr`、`--model-omni`，或者写进 `.env` |
 
 其余选项：`--omni-input Video1`（视频模式换用摄像机画面）、`--omni-sample-seconds`（视频模式每几秒取一帧，默认 5）、`--concurrency`（同时识别多页课件）、`--no-skip-done`（批量时不跳过已完成的课）。全部选项见 `vsc run --help`。
@@ -93,7 +93,7 @@ uv run vsc summary 3f9a1c2e --print > notes.md      # 把笔记打印出来，�
 | `vsc semesters` | 打印校历，看 `--semester` 能填什么（`current` 或 `2026-2027-1`） |
 | `vsc list` | 录播列表。`--semester`、`--title`、`--start`、`--end`、`--limit`、`--order` |
 | `vsc fetch <编号>` | 只下载。默认屏幕流带声音就不下摄像机流；`--full-download` 全下，`--types VGA,Video1` 指定 |
-| `vsc prepare <编号>` | 只做本地处理：抽音频、切课件页。`--threshold`、`--max-slides`、`--max-gap` 调切页 |
+| `vsc prepare <编号>` | 只做本地处理：抽音频、切课件页。`--threshold`、`--max-slides`、`--max-gap` 调切页，参数变了会重切 |
 | `vsc run` | 下载并整理，选项见上 |
 | `vsc status <编号>` | 各步完成情况、错误、处理提示、生成了哪些文件、token 用量。不联网 |
 | `vsc summary <编号>` | 笔记文件在哪；`--print` 把笔记原样写到 stdout |
@@ -109,7 +109,7 @@ uv run vsc summary 3f9a1c2e --print > notes.md      # 把笔记打印出来，�
 | `2` | 命令行用法错误。这时不保证输出 JSON，原因在 stderr |
 | `3` | 没登录或会话过期 |
 | `4` | 模型服务、智慧课堂接口或网络出错 |
-| `5` | 部分完成：有步骤失败了，其余已存盘，重跑同一条命令续上 |
+| `5` | 部分完成：有步骤失败了，其余已存盘；重跑并带上失败的步骤即可续上（只跑 `--stages` 子集时，没带的阶段沿用上次的结论，退出码不变） |
 | `6` | 没匹配到：筛选条件没有结果，或 `summary` 的那节课还没有笔记 |
 
 其余说明在 `skills/very-smart-class/SKILL.md`，直接读取对照操作。
@@ -194,12 +194,12 @@ data/<课程名>/<编号>/
 - 分成多段录制的课，各段分别处理，时间戳不跨段对齐。
 - 板书课（屏幕上没有内容、老师写粉笔字）：会改看摄像机画面并裁出黑板区域，但这条路径暂未真实验证。
 - 超过 2 小时的录像不会自动切段。
-- 录播的屏幕流和摄像机流开始时间可能不一样。程序会按两者的开始时间差校正时间戳；两者时长相差超过 5 秒时会在「处理提示」里标出，时间轴可能有偏差。
+- 录播的屏幕流和摄像机流的时长可能对不上，相差超过 5 秒会在「处理提示」里标出，时间轴可能有偏差。index.xml 里的 `StartTime` 实测不是相对录制起点的偏移（还出现过 640 s、23168 s 的值），程序不拿它校正时间戳，两路画面按同一个零点处理。
 - 媒体文件已被平台删除的旧录像（仅课程列表可见）会下载失败，请自行选择近期的录播。
 
 ## 隐私
 
-- 密码只在登录请求里用一次，不落盘；本地只保存登录会话的 Cookie（`data/.session.json`）。
+- 密码只在登录请求里用一次，不落盘；本地只保存登录会话的 Cookie（`data/.session.json`）。把 `data/` 或课时目录拷给别人之前先删掉它，那里面是你的登录态。
 - 录像和生成的笔记都留在本地。除了登录智慧课堂，涉及上传的只有需要模型分析的内容：音频、课件页截图、缩小后的录像，以及模型输出的文本。这些文件里包含他人的声音和肖像，仅供个人复习使用，禁止公开分享。
 
 ## 参与开发

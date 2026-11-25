@@ -74,10 +74,10 @@ The argument of `run` is the recording id: the `NewID` in the first column of `v
 | Process one lecture | `vsc run <id>` |
 | Process a whole course | `vsc list --semester current --title 编译原理` to see how many there are (the keyword matches the Chinese course name), then `vsc run --semester current --title 编译原理 --limit 5` |
 | Save model cost | `--no-a-path`: skip the whole-video pass; transcription and slides only |
-| Continue downloaded lessons | `vsc run --local data/<course>`, no login needed |
+| Continue downloaded lessons | `vsc run --local data/<course>`, no login needed; the lesson folder may live anywhere, it is processed where it is |
 | Run selected stages only | `--stages transcribe,vision,summarize,render` |
 | Check progress | `vsc status <id>` |
-| Manage disk space | `--prune-video` (delete the original mp4 files once done); `--min-free 2GB` sets the free-space floor before downloading |
+| Manage disk space | `--prune-video` (delete the original mp4 files once every step has succeeded; a failed step keeps them). Notes can still be regenerated locally afterwards and the video mode reuses the shrunken copy; cutting slides again needs a new `fetch`. `--min-free 2GB` sets the free-space floor before downloading |
 | Change models | `--model-text`, `--model-vision`, `--model-asr`, `--model-omni`, or set them in `.env` |
 
 Other options: `--omni-input Video1` (the video mode watches the camera track instead), `--omni-sample-seconds` (one frame every N seconds in the video mode, default 5), `--concurrency` (how many slides are described at once), `--no-skip-done` (do not skip finished lessons in a batch). All options: `vsc run --help`.
@@ -95,7 +95,7 @@ All commands are idempotent; after an interruption, rerun the same command.
 | `vsc semesters` | Print the academic calendar; shows what `--semester` accepts (`current` or `2026-2027-1`) |
 | `vsc list` | Recordings. `--semester`, `--title`, `--start`, `--end`, `--limit`, `--order` |
 | `vsc fetch <id>` | Download only. The camera track is skipped when the screen track has sound; `--full-download` gets everything, `--types VGA,Video1` selects |
-| `vsc prepare <id>` | Local processing only: extract the audio and cut the slides. `--threshold`, `--max-slides`, `--max-gap` tune the slide cutting |
+| `vsc prepare <id>` | Local processing only: extract the audio and cut the slides. `--threshold`, `--max-slides`, `--max-gap` tune the slide cutting; changed values recut |
 | `vsc run` | Download and process; options above |
 | `vsc status <id>` | Per-stage state, errors, processing notes, generated files and token usage. No network |
 | `vsc summary <id>` | Where the note is; `--print` writes it to stdout as is |
@@ -111,7 +111,7 @@ With `--json` (before or after the command), stdout holds one JSON document and 
 | `2` | Command-line usage error. JSON is not guaranteed in this case; the reason is on stderr |
 | `3` | Not logged in, or the session expired |
 | `4` | Model service, Smart Classroom API or network error |
-| `5` | Partially done: a step failed and the rest is on disk; rerun the same command to resume |
+| `5` | Partially done: a step failed and the rest is on disk; rerun with the failed step included to resume (with a `--stages` subset, stages you left out keep their earlier verdict, so the exit code does not change) |
 | `6` | No match: the filter returned nothing, or the lesson had no note yet when `summary` was called |
 
 The rest is in `skills/very-smart-class/SKILL.md`; agents read that file directly.
@@ -196,12 +196,12 @@ Two things change the cost:
 - Lessons recorded in several segments are processed segment by segment; timestamps are not aligned across segments.
 - Blackboard lectures (nothing on the screen, chalk only): the camera track is used and the board area is cropped, but this path has not been verified on a real recording yet.
 - Recordings longer than 2 hours are not split.
-- The screen and camera tracks may start at different times. Timestamps are corrected by that difference; when the two tracks differ by more than 5 seconds in length, it is stated in the processing notes and the timeline may be off.
+- The screen and camera tracks can differ in length; when they differ by more than 5 seconds it is stated in the processing notes and the timeline may be off. The `StartTime` in index.xml turned out not to be an offset from the start of the recording (values of 640 s and 23168 s occur), so it is not used to correct timestamps; both tracks share one origin.
 - Old recordings whose media the platform has deleted (they are still listed) fail to download; pick a recent one.
 
 ## Privacy
 
-- The password is used once in the login request and never written to disk; only the session cookie is stored locally (`data/.session.json`).
+- The password is used once in the login request and never written to disk; only the session cookie is stored locally (`data/.session.json`). That file is your login: delete it before handing `data/` or a lesson folder to anyone.
 - Recordings and notes stay on your machine. Apart from logging in, what leaves it is only what the models need to analyse: audio, slide screenshots, the downscaled recording, and the text the models produce from them. These files contain other people's voices and images; keep them for your own revision and do not share them.
 
 ## Contributing
