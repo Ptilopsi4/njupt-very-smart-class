@@ -293,6 +293,9 @@ def test_vision_and_text_adapters_request_bodies():
     assert body["enable_thinking"] is True and body["max_tokens"] == 100
     assert c.spent == {"qwen-v": 15, "qwen-t": 15}  # 按请求模型名计数，各一次
     assert c.spent_detail == {"qwen-v": {"input": 10, "output": 5}, "qwen-t": {"input": 10, "output": 5}}
+    ms = bailian.dashscope_model_set(asr="qwen-v", vision="qwen-v", text="qwen-t", omni=None, client=c)
+    assert ms.spent() == {"qwen-v": 15, "qwen-t": 15}  # 四个角色共用一个客户端：同一份计数只算一次
+    assert ms.spent_detail() == {"qwen-v": {"input": 10, "output": 5}, "qwen-t": {"input": 10, "output": 5}}
 
 
 def test_video_adapter_uploads_then_chats_with_video_url(monkeypatch, tmp_path):

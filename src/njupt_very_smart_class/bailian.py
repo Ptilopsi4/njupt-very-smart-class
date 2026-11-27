@@ -363,6 +363,10 @@ class DashScopeAsrModel:
     def spent(self) -> dict[str, int]:
         return self.client.spent
 
+    @property
+    def spent_detail(self) -> dict[str, dict[str, int]]:
+        return self.client.spent_detail
+
     @staticmethod
     def _uploadable(audio: Path) -> Path:
         """wav 先转成 mp3 再上传（体积约 1/4，转写结果不受影响）；没有 libmp3lame 或转码失败时直接传 wav。"""
@@ -410,6 +414,10 @@ class _DashScopeChat:
     @property
     def spent(self) -> dict[str, int]:
         return self.client.spent
+
+    @property
+    def spent_detail(self) -> dict[str, dict[str, int]]:
+        return self.client.spent_detail
 
     def _wrap(self, res: ChatResult) -> ModelOutput:
         return ModelOutput(
