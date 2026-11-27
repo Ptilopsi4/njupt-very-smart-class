@@ -66,8 +66,11 @@ def test_run_lesson_end_to_end_without_fetch(monkeypatch, lesson_dir):
         assert (lesson_dir / name).exists(), name
     state = json.loads((lesson_dir / "state.json").read_text(encoding="utf-8"))
     assert set(state["stages"]) >= {"prepare", "transcribe", "vision", "summarize", "render"}
-    # VGA 判定 8 + ASR 1 + 幻灯片 3 + map 1 + reduce 1，每次 150
+    # VGA 判定 8 + ASR 1 + 幻灯片 3 + map 1 + reduce 1，每次 150（入 100 / 出 50）
     assert sum(state["tokens"].values()) == 2100
+    detail = state["tokens_detail"]
+    assert sum(d["input"] for d in detail.values()) == 1400 and sum(d["output"] for d in detail.values()) == 700
+    assert detail["fake-asr"] == {"input": 100, "output": 50}  # 转写阶段也在账上
     assert any("[vision]" in line for line in logs)
     assert models.asr.calls[0] == "transcribe:audio.wav"
 
@@ -116,8 +119,10 @@ def test_run_batch_continues_on_error_and_reports(monkeypatch, lesson_dir, data_
     assert statuses == ["ok", "error"], statuses
     assert report["results"][0]["summary"].endswith("summary.md")
     assert sum(report["results"][0]["tokens"].values()) == 2100
+    assert sum(d["input"] + d["output"] for d in report["results"][0]["tokens_detail"].values()) == 2100
     assert "未下载" in report["results"][1]["error"]
     assert sum(report["tokens"].values()) == 2100
+    assert sum(d["input"] + d["output"] for d in report["tokens_detail"].values()) == 2100
     path = pipeline.write_batch_report(report, data_root / "_reports")
     assert path.exists() and path.name.startswith("batch-")
     again = pipeline.run_batch(None, videos[:1], stages=stages, models=fake_model_set(), log=lambda *_: None)

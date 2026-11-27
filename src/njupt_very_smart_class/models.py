@@ -118,15 +118,29 @@ class ModelSet:
     text: TextModel
     video: VideoModel
 
-    def spent(self) -> dict[str, int]:
-        """汇总各成员上报的 token；多个角色共用一个客户端时，同一份计数只算一次。"""
-        distinct: list[dict[str, int]] = []
+    def _distinct(self, attr: str) -> list[dict]:
+        """各成员名为 attr 的计数字典，按对象去重：多个角色共用一个客户端时同一份只算一次。"""
+        seen: list[dict] = []
         for member in (self.asr, self.vision, self.text, self.video):
-            stats = getattr(member, "spent", None)
-            if isinstance(stats, dict) and not any(stats is seen for seen in distinct):
-                distinct.append(stats)
+            stats = getattr(member, attr, None)
+            if isinstance(stats, dict) and not any(stats is s for s in seen):
+                seen.append(stats)
+        return seen
+
+    def spent(self) -> dict[str, int]:
+        """汇总各成员上报的 token 总数。"""
         total: dict[str, int] = {}
-        for stats in distinct:
+        for stats in self._distinct("spent"):
             for model, n in stats.items():
                 total[model] = total.get(model, 0) + n
+        return total
+
+    def spent_detail(self) -> dict[str, dict[str, int]]:
+        """同 spent()，按输入 / 输出分项；没有分项计数的成员（NullVideoModel）不计。"""
+        total: dict[str, dict[str, int]] = {}
+        for stats in self._distinct("spent_detail"):
+            for model, d in stats.items():
+                item = total.setdefault(model, {"input": 0, "output": 0})
+                item["input"] += int(d.get("input") or 0)
+                item["output"] += int(d.get("output") or 0)
         return total

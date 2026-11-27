@@ -73,6 +73,15 @@ def test_chat_body_and_usage(client):
     assert body["response_format"] == {"type": "json_object"}
     assert body["stream"] is False
     assert res.content == '{"ok": true}' and client.spent["m"] == 15
+    assert client.spent_detail["m"] == {"input": 10, "output": 5}
+
+
+def test_accounting_is_thread_safe(client):
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(8) as pool:
+        list(pool.map(lambda _: client._account("m", {"prompt_tokens": 1, "completion_tokens": 2}), range(400)))
+    assert client.spent == {"m": 1200} and client.spent_detail == {"m": {"input": 400, "output": 800}}
 
 
 def test_chat_retries_on_429_then_succeeds(client):
@@ -243,7 +252,7 @@ RAW_T = {
             "sentences": [{"begin_time": 0, "end_time": 4500, "text": "第一句。"}],
         }
     ],
-    "usage": {"input_tokens": 1, "output_tokens": 2},
+    "usage": {"input_tokens": 1, "output_tokens": 2, "total_Tokens": 3},  # filetrans 的 total 是大写 T
 }
 
 
@@ -282,6 +291,7 @@ def test_vision_and_text_adapters_request_bodies():
     body = s.calls[-1]["json"]
     assert body["enable_thinking"] is True and body["max_tokens"] == 100
     assert c.spent == {"qwen-v": 15, "qwen-t": 15}  # 按请求模型名计数，各一次
+    assert c.spent_detail == {"qwen-v": {"input": 10, "output": 5}, "qwen-t": {"input": 10, "output": 5}}
 
 
 def test_video_adapter_uploads_then_chats_with_video_url(monkeypatch, tmp_path):
@@ -326,7 +336,8 @@ def test_asr_adapter_full_flow_and_no_words(monkeypatch, tmp_path):
         and out.text == "全文。"
         and out.duration_ms == 9000
     )
-    assert out.model == "asr-m" and out.usage == {"input_tokens": 1, "output_tokens": 2} and not out.no_speech
+    assert out.model == "asr-m" and out.usage == RAW_T["usage"] and not out.no_speech
+    assert c.spent == {"asr-m": 3} and c.spent_detail == {"asr-m": {"input": 1, "output": 2}}  # 转写也计入
     submit = next(x for x in s.calls if x["m"] == "POST" and "transcription" in x["url"])
     assert submit["headers"]["X-DashScope-Async"] == "enable"
     assert submit["json"]["input"]["file_urls"] == ["oss://d/x/audio.wav"]

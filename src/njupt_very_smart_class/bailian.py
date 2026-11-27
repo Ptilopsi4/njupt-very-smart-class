@@ -8,6 +8,7 @@ from __future__ import annotations
 import base64
 import json
 import re
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -122,7 +123,22 @@ class BailianClient:
         self.timeout = timeout
         self.session = requests.Session()
         self.session.headers.update({"Authorization": f"Bearer {self.api_key}"})
-        self.spent: dict[str, int] = {}  # model -> 累计 total_tokens，用于本地成本估算
+        # model -> 累计 token：spent 是总数，spent_detail 分输入 / 输出。vision 阶段多线程共用一个客户端，更新要加锁
+        self._lock = threading.Lock()
+        self.spent: dict[str, int] = {}
+        self.spent_detail: dict[str, dict[str, int]] = {}
+
+    def _account(self, model: str, usage: dict) -> None:
+        """累加一次调用的用量。对话补全的键是 prompt_tokens / completion_tokens，filetrans 是 input_tokens /
+        output_tokens（它的 total 还写作 total_Tokens）；总数一律取输入 + 输出。
+        """
+        inp = int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0)
+        out = int(usage.get("completion_tokens") or usage.get("output_tokens") or 0)
+        with self._lock:
+            self.spent[model] = self.spent.get(model, 0) + inp + out
+            detail = self.spent_detail.setdefault(model, {"input": 0, "output": 0})
+            detail["input"] += inp
+            detail["output"] += out
 
     def _json_headers(self) -> dict:
         return {**self.session.headers, "Content-Type": "application/json"}
@@ -188,7 +204,7 @@ class BailianClient:
         choice = data["choices"][0]
         msg = choice["message"]
         usage = data.get("usage") or {}
-        self.spent[model] = self.spent.get(model, 0) + int(usage.get("total_tokens") or 0)
+        self._account(model, usage)
         return ChatResult(
             content=msg.get("content") or "",
             reasoning=msg.get("reasoning_content") or "",
@@ -370,7 +386,9 @@ class DashScopeAsrModel:
         if any(code in json.dumps(raw, ensure_ascii=False) for code in NO_SPEECH_CODES):
             return AsrOutput([], "", 0, {}, self.model, raw=raw, no_speech=True, reason="asr_no_words")
         segments, text, duration = normalize_filetrans(raw)
-        return AsrOutput(segments, text, duration, raw.get("usage") or {}, self.model, raw=raw)
+        usage = raw.get("usage") or {}
+        self.client._account(self.model, usage)
+        return AsrOutput(segments, text, duration, usage, self.model, raw=raw)
 
 
 class _DashScopeChat:

@@ -213,6 +213,7 @@ def run(
         "errors": errors,
         "notes": state.get("notes", []),
         "tokens": state.get("tokens", {}),
+        "tokens_detail": state.get("tokens_detail", {}),
         "verdict": pipeline.classify_lesson(report["lesson_dir"]),
     }
     if CTX.json_mode:
@@ -225,9 +226,18 @@ def run(
     for n in payload["notes"]:
         warn(f"提示 {n}")
     if payload["tokens"]:
-        log("token 用量：" + "，".join(f"{m} {n}" for m, n in payload["tokens"].items()))
+        log("token 用量：" + fmt_tokens(payload["tokens"], payload["tokens_detail"]))
     log(f"摘要：{payload['summary']}" + ("" if payload["summary_exists"] else "（未生成）"))
     raise typer.Exit(code)
+
+
+def fmt_tokens(tokens: dict, detail: dict) -> str:
+    """`模型 总数（入 x / 出 y）`；没有分项计数的模型只显示总数。"""
+    parts = []
+    for model, n in tokens.items():
+        d = detail.get(model)
+        parts.append(f"{model} {n}" + (f"（入 {d['input']} / 出 {d['output']}）" if d else ""))
+    return "，".join(parts)
 
 
 def fail_pipeline_exc(exc: Exception) -> None:
@@ -313,6 +323,7 @@ def _finish_batch(report: dict, mode: str) -> None:
                 "count": len(results),
                 "results": results,
                 "tokens": report["tokens"],
+                "tokens_detail": report.get("tokens_detail", {}),
                 "report": str(report_path),
             }
         )
@@ -340,7 +351,7 @@ def _finish_batch(report: dict, mode: str) -> None:
     log(
         "，".join(f"{k} {v}" for k, v in counts.items())
         + f"；本次模型调用 {total} tokens（"
-        + "，".join(f"{m} {n}" for m, n in report["tokens"].items())
+        + fmt_tokens(report["tokens"], report.get("tokens_detail", {}))
         + "）"
     )
     log(f"报告：{report_path}")

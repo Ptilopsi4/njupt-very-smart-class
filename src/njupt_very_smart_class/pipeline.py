@@ -469,6 +469,21 @@ def _run_segment(
                 log(f"[prune] {seg_dir.name}: 已删除视频原件 {removed}（保留 wav / 关键帧 / *_640.mp4）")
 
 
+def _delta(current: dict[str, int], baseline: dict[str, int]) -> dict[str, int]:
+    """累计计数减去基线，只留正增量。"""
+    return {k: v - baseline.get(k, 0) for k, v in current.items() if v - baseline.get(k, 0) > 0}
+
+
+def _delta_detail(current: dict[str, dict[str, int]], baseline: dict[str, dict[str, int]]) -> dict[str, dict[str, int]]:
+    out: dict[str, dict[str, int]] = {}
+    for model, d in current.items():
+        base = baseline.get(model) or {}
+        delta = {k: int(d.get(k) or 0) - int(base.get(k) or 0) for k in ("input", "output")}
+        if delta["input"] > 0 or delta["output"] > 0:
+            out[model] = delta
+    return out
+
+
 def run_lesson(
     sc: NjuptSmartclass | None,
     new_id: str,
@@ -490,6 +505,7 @@ def run_lesson(
     # 只有请求了会调模型的阶段才需要 API Key：纯本地的重渲染、重合并不该因为缺 key 失败
     models = models or (dashscope_model_set(**opts.models) if wants & MODEL_STAGES else None)
     baseline = models.spent() if models else {}
+    baseline_detail = models.spent_detail() if models else {}
     needs_media = bool(wants & {"prepare", "transcribe", "vision", "summarize", "omni", "fuse", "render"})
     notes = _NoteBook()
     errors: dict[str, str] = {}
@@ -567,17 +583,23 @@ def run_lesson(
     state["notes"] = notes.flat()
     state["notes_by_stage"] = notes.snapshot()
     state["errors"] = errors
-    # 批量里 ModelSet 跨课复用，计数是累计值；state.tokens 只记本课本次的增量
-    spent = {
-        k: v - baseline.get(k, 0) for k, v in (models.spent() if models else {}).items() if v - baseline.get(k, 0) > 0
-    }
+    # 批量里 ModelSet 跨课复用，计数是累计值；state.tokens / tokens_detail 只记本课本次的增量
+    spent = _delta(models.spent() if models else {}, baseline)
     if spent:
         total = {k: v for k, v in state.get("tokens", {}).items() if isinstance(v, int)}
         for model_name, n in spent.items():
             total[model_name] = total.get(model_name, 0) + n
         state["tokens"] = total
+    spent_detail = _delta_detail(models.spent_detail() if models else {}, baseline_detail)
+    if spent_detail:
+        total_detail = {k: v for k, v in state.get("tokens_detail", {}).items() if isinstance(v, dict)}
+        for model_name, d in spent_detail.items():
+            item = total_detail.setdefault(model_name, {"input": 0, "output": 0})
+            item["input"] += d["input"]
+            item["output"] += d["output"]
+        state["tokens_detail"] = total_detail
     (lesson_dir / "state.json").write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
-    return {"lesson_dir": lesson_dir, "state": state, "tokens": spent}
+    return {"lesson_dir": lesson_dir, "state": state, "tokens": spent, "tokens_detail": spent_detail}
 
 
 # ---------- 批量 ----------
@@ -721,6 +743,7 @@ def run_batch(
                         find_summary(Path(report["lesson_dir"])) or Path(report["lesson_dir"]) / "summary.md"
                     ),
                     "tokens": report["state"].get("tokens", {}),
+                    "tokens_detail": report["state"].get("tokens_detail", {}),
                 }
             )
         except AuthError as exc:  # 会话失效时后续课时必然同样失败，提前结束
@@ -735,7 +758,13 @@ def run_batch(
             results.append(
                 {"new_id": v.id, "status": "error", "title": v.title, "course": v.course_name, "error": str(exc)[:500]}
             )
-    return {"results": results, "tokens": models.spent() if models else {}, "stages": list(stages), "aborted": aborted}
+    return {
+        "results": results,
+        "tokens": models.spent() if models else {},
+        "tokens_detail": models.spent_detail() if models else {},
+        "stages": list(stages),
+        "aborted": aborted,
+    }
 
 
 def discover_local(roots: list[Path]) -> list[tuple[NjuptSmartclassVideoSummary, Path]]:

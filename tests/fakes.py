@@ -64,10 +64,14 @@ class _Fake:
         self.name = name
         self.calls: list[str] = []
         self.spent: dict[str, int] = {}
+        self.spent_detail: dict[str, dict[str, int]] = {}
 
     def _tick(self, call: str) -> None:
         self.calls.append(call)
         self.spent[self.name] = self.spent.get(self.name, 0) + 150
+        detail = self.spent_detail.setdefault(self.name, {"input": 0, "output": 0})
+        detail["input"] += 100
+        detail["output"] += 50
 
 
 class FakeAsrModel(_Fake):
