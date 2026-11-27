@@ -3,7 +3,7 @@ import json
 
 from PIL import Image
 
-from njupt_very_smart_class.media import extract_audio, has_audio, probe
+from njupt_very_smart_class.media import compress_audio, extract_audio, has_audio, probe, same_duration
 from njupt_very_smart_class.slides import (
     Slide,
     dhash,
@@ -30,6 +30,15 @@ def test_extract_audio_wav_16k_mono(synthetic_video, tmp_path):
         assert w.getframerate() == 16000 and w.getnchannels() == 1
         assert abs(w.getnframes() / 16000 - 9.0) < 0.3
     assert extract_audio(synthetic_video, wav) == wav  # 幂等
+
+
+def test_compress_audio_mp3_for_upload(synthetic_video, tmp_path):
+    wav = extract_audio(synthetic_video, tmp_path / "audio.wav")
+    mp3 = compress_audio(wav, tmp_path / "audio.mp3")
+    audio = next(s for s in probe(mp3)["streams"] if s["codec_type"] == "audio")
+    assert audio["codec_name"] == "mp3" and int(audio["sample_rate"]) == 16000 and audio["channels"] == 1
+    assert same_duration(mp3, wav) and mp3.stat().st_size < wav.stat().st_size
+    assert compress_audio(wav, mp3) == mp3  # 已有且等长即复用，不重新编码
 
 
 def test_dhash_sensitivity():

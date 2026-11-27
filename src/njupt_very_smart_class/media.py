@@ -117,6 +117,39 @@ def extract_audio(src: Path, dst: Path, *, sample_rate: int = 16000) -> Path:
     return dst
 
 
+def compress_audio(src: Path, dst: Path, *, bitrate: str = "64k") -> Path:
+    """wav → mp3（libmp3lame，单声道 16 kHz）：语音转写上传用，47 分钟 86 MB 的 PCM 约 21 MB；
+    dst 已存在且与源等长则跳过。"""
+    if dst.exists() and same_duration(dst, src):
+        return dst
+    require_ffmpeg()
+    proc = _run(
+        [
+            "ffmpeg",
+            "-nostdin",
+            "-y",
+            "-loglevel",
+            "error",
+            "-i",
+            str(src),
+            "-ac",
+            "1",
+            "-ar",
+            "16000",
+            "-c:a",
+            "libmp3lame",
+            "-b:a",
+            bitrate,
+            str(dst),
+        ],
+        timeout=600,
+    )
+    if proc.returncode or not dst.exists():
+        dst.unlink(missing_ok=True)
+        raise MediaError(f"压缩音频失败：{proc.stderr.strip()}")
+    return dst
+
+
 def grab_frame(src: Path, seconds: float, dst: Path, *, timeout: float = 120) -> Path:
     """按时间点截一帧（缩略图用）。"""
     require_ffmpeg()

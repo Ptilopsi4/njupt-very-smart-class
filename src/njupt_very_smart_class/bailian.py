@@ -15,6 +15,7 @@ from pathlib import Path
 
 import requests
 
+from . import media
 from .config import API_BASE, COMPAT_BASE, dashscope_api_key
 
 RESOLVE_HEADER = {"X-DashScope-OssResourceResolve": "enable"}
@@ -362,8 +363,19 @@ class DashScopeAsrModel:
     def spent(self) -> dict[str, int]:
         return self.client.spent
 
+    @staticmethod
+    def _uploadable(audio: Path) -> Path:
+        """wav 先转成 mp3 再上传（体积约 1/4，转写结果不受影响）；没有 libmp3lame 或转码失败时直接传 wav。"""
+        if audio.suffix.lower() != ".wav":
+            return audio
+        mp3 = audio.with_suffix(".mp3")
+        try:
+            return media.compress_audio(audio, mp3)
+        except media.MediaError:
+            return audio
+
     def transcribe(self, audio: Path) -> AsrOutput:
-        url = self.client.upload_temp(audio, self.model)
+        url = self.client.upload_temp(self._uploadable(audio), self.model)
         task_id = self.client.submit_transcription(url, model=self.model)
         try:
             output = self.client.wait_task(task_id)

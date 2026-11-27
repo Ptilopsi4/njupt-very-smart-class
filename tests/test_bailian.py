@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 import json
 import pathlib
+import subprocess
 
 import pytest
 import requests
@@ -315,6 +316,31 @@ def test_video_adapter_uploads_then_chats_with_video_url(monkeypatch, tmp_path):
     assert out.data == {"chapters": []}
 
 
+def _sine_wav(tmp_path: pathlib.Path) -> pathlib.Path:
+    wav = tmp_path / "audio.wav"
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-nostdin",
+            "-y",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:duration=1",
+            "-ar",
+            "16000",
+            "-ac",
+            "1",
+            str(wav),
+        ],
+        check=True,
+        timeout=60,
+    )
+    return wav
+
+
 def test_asr_adapter_full_flow_and_no_words(monkeypatch, tmp_path):
     from njupt_very_smart_class import bailian
 
@@ -325,8 +351,7 @@ def test_asr_adapter_full_flow_and_no_words(monkeypatch, tmp_path):
             "R", (), {"status_code": 200, "raise_for_status": lambda self: None, "json": lambda self: RAW_T}
         )(),
     )
-    audio = tmp_path / "audio.wav"
-    audio.write_bytes(b"RIFF")
+    audio = _sine_wav(tmp_path)
     s = _policy_session()
     monkeypatch.setattr(bailian.requests, "post", s.post)  # OSS 上传走裸 requests.post，这里转回假会话
     c = _client_with(s)
@@ -340,11 +365,19 @@ def test_asr_adapter_full_flow_and_no_words(monkeypatch, tmp_path):
     assert c.spent == {"asr-m": 3} and c.spent_detail == {"asr-m": {"input": 1, "output": 2}}  # 转写也计入
     submit = next(x for x in s.calls if x["m"] == "POST" and "transcription" in x["url"])
     assert submit["headers"]["X-DashScope-Async"] == "enable"
-    assert submit["json"]["input"]["file_urls"] == ["oss://d/x/audio.wav"]
+    assert submit["json"]["input"]["file_urls"] == ["oss://d/x/audio.mp3"]  # wav 先压成 mp3 再上传
+    assert (tmp_path / "audio.mp3").exists()
     s2 = _policy_session(transcribe_no_words=True)
     monkeypatch.setattr(bailian.requests, "post", s2.post)
     out2 = bailian.DashScopeAsrModel(_client_with(s2), "asr-m").transcribe(audio)
     assert out2.no_speech and out2.reason == "asr_no_words" and out2.segments == []
+    broken = tmp_path / "broken.wav"
+    broken.write_bytes(b"RIFF")
+    s3 = _policy_session()
+    monkeypatch.setattr(bailian.requests, "post", s3.post)
+    bailian.DashScopeAsrModel(_client_with(s3), "asr-m").transcribe(broken)
+    submit3 = next(x for x in s3.calls if x["m"] == "POST" and "transcription" in x["url"])
+    assert submit3["json"]["input"]["file_urls"] == ["oss://d/x/broken.wav"]  # 压不了就直接传原文件
 
 
 def test_model_set_spent_aggregates():
