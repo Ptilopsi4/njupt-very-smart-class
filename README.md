@@ -79,7 +79,7 @@ uv run vsc summary 3f9a1c2e --print > notes.md      # 把笔记打印出来，�
 - 只跑某些步骤：`--stages transcribe,vision,summarize,render`。
 - 磁盘：`--prune-video` 在各步都成功后删掉 mp4 原件，有一步失败则保留；删后仍能重跑摘要和视频模式，重切课件页需再 `fetch`。`--min-free 2GB` 是下载前的磁盘下限。
 - 换模型：`--model-text`、`--model-vision`、`--model-asr`、`--model-omni`，或写进 `.env`。不用清缓存，输入或模型变了的步骤会自动重算，后面的步骤跟着重算；批量要让已完成的课重算需加 `--no-skip-done`。
-- 其余：`--omni-input Video1`（视频模式改看摄像机画面）、`--omni-sample-seconds`（每几秒取一帧，默认 5）、`--concurrency`（同时识别多页课件）、`--force-vision` / `--force-omni` / `--force-fuse`（强制重算某一步及其后续步骤）。全部选项见 `vsc run --help`。
+- 其余：`--omni-input Video1`（视频模式改看摄像机画面）、`--omni-sample-seconds`（每几秒取一帧，默认 5）、`--concurrency`（同时识别多页课件）、`--jobs N`（批量时同时处理几节课，默认 1 顺序处理）、`--force-vision` / `--force-omni` / `--force-fuse`（强制重算某一步及其后续步骤）。全部选项见 `vsc run --help`。
 
 ### For agent
 
@@ -126,6 +126,7 @@ data/<课程名>/<编号>/
 └── Seg1/                 每一段录制的文件；只有一段时没有这一层
     ├── VGA.mp4           屏幕流录像；Video1.mp4 是摄像机画面。--prune-video 会删掉它们
     ├── audio.wav         抽出来的音频，16 kHz 单声道
+    ├── audio.mp3         转写上传用的压缩版，约 wav 的 1/4
     ├── transcript.json   每句话的起止时间（毫秒）和文字
     ├── slides/           课件页截图，以及视觉模型对每一页的描述
     ├── c_result.json     转写模式的笔记

@@ -81,7 +81,7 @@ Common `vsc run` options:
 - Selected stages: `--stages transcribe,vision,summarize,render`.
 - Disk: `--prune-video` deletes the original mp4 files once every stage has succeeded, and keeps them if one failed; notes and the video mode can still be rerun afterwards, cutting slides again needs a new `fetch`. `--min-free 2GB` is the free-space floor before downloading.
 - Models: `--model-text`, `--model-vision`, `--model-asr`, `--model-omni`, or set them in `.env`. No cache to clear: a stage whose model or input changed is recomputed, and the stages after it follow; to have finished lessons in a batch recomputed, add `--no-skip-done`.
-- Others: `--omni-input Video1` (the video mode watches the camera track), `--omni-sample-seconds` (one frame every N seconds, default 5), `--concurrency` (how many slides are described at once), `--force-vision` / `--force-omni` / `--force-fuse` (recompute one stage and the stages after it). All options: `vsc run --help`.
+- Others: `--omni-input Video1` (the video mode watches the camera track), `--omni-sample-seconds` (one frame every N seconds, default 5), `--concurrency` (how many slides are described at once), `--jobs N` (how many lessons a batch processes at once, default 1), `--force-vision` / `--force-omni` / `--force-fuse` (recompute one stage and the stages after it). All options: `vsc run --help`.
 
 ### For agents
 
@@ -128,6 +128,7 @@ data/<course>/<id>/
 └── Seg1/                 files of each recorded segment; absent when there is only one
     ├── VGA.mp4           screen recording; Video1.mp4 is the camera. --prune-video deletes them
     ├── audio.wav         extracted audio, 16 kHz mono
+    ├── audio.mp3         compressed copy for the transcription upload, about a quarter of the wav
     ├── transcript.json   start and end time (ms) and text of every sentence
     ├── slides/           slide screenshots, and the vision model's description of each
     ├── c_result.json     the transcription mode's notes
