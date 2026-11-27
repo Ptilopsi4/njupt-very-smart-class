@@ -62,6 +62,15 @@ def warn(message: str) -> None:
     err.print(f"[yellow]{message}[/yellow]")
 
 
+def fmt_tokens(tokens: dict, detail: dict) -> str:
+    """`模型 总数（入 x / 出 y）`；没有分项计数的模型只显示总数。"""
+    parts = []
+    for model, n in tokens.items():
+        d = detail.get(model)
+        parts.append(f"{model} {n}" + (f"（入 {d['input']} / 出 {d['output']}）" if d else ""))
+    return "，".join(parts)
+
+
 def fail(message: str, code: int = EXIT_ERROR, **payload) -> None:
     """统一失败出口：json 模式输出 {"ok": false, ...}，否则红字。"""
     if CTX.json_mode:

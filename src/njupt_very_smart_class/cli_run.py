@@ -27,6 +27,7 @@ from .cli import (
     apply_json_flag,
     emit_json,
     fail,
+    fmt_tokens,
     log,
     out,
     parse_size,
@@ -238,15 +239,6 @@ def run(
         log("token 用量：" + fmt_tokens(payload["tokens"], payload["tokens_detail"]))
     log(f"摘要：{payload['summary']}" + ("" if payload["summary_exists"] else "（未生成）"))
     raise typer.Exit(code)
-
-
-def fmt_tokens(tokens: dict, detail: dict) -> str:
-    """`模型 总数（入 x / 出 y）`；没有分项计数的模型只显示总数。"""
-    parts = []
-    for model, n in tokens.items():
-        d = detail.get(model)
-        parts.append(f"{model} {n}" + (f"（入 {d['input']} / 出 {d['output']}）" if d else ""))
-    return "，".join(parts)
 
 
 def fail_pipeline_exc(exc: Exception) -> None:

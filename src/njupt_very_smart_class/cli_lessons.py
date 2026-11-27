@@ -27,6 +27,7 @@ from .cli import (
     apply_json_flag,
     emit_json,
     fail,
+    fmt_tokens,
     log,
     out,
     parse_date,
@@ -361,6 +362,7 @@ def status(
         "errors": state.get("errors", {}),
         "notes": state.get("notes", []),
         "tokens": state.get("tokens", {}),
+        "tokens_detail": state.get("tokens_detail", {}),
         "verdict": pipeline.classify_lesson(lesson_dir),
         "summary": str(pipeline.find_summary(lesson_dir) or lesson_dir / "summary.md"),
         "summary_exists": pipeline.find_summary(lesson_dir) is not None,
@@ -379,7 +381,7 @@ def status(
     for seg, p in products.items():
         out.print(f"  {seg}: " + ", ".join(f"{k}={v}" for k, v in p.items()))
     if payload["tokens"]:
-        out.print("token " + ", ".join(f"{m} {n}" for m, n in payload["tokens"].items()))
+        out.print("token " + fmt_tokens(payload["tokens"], payload["tokens_detail"]))
     out.print(f"摘要 {payload['summary']}" + ("" if payload["summary_exists"] else "（未生成）"))
 
 
