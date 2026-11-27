@@ -62,3 +62,6 @@ extend-exclude = ["src/njupt_very_smart_class/vendor"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+markers = ["real: calls the real Bailian API; opt in with VSC_REAL_SMOKE=1 and DASHSCOPE_API_KEY"]

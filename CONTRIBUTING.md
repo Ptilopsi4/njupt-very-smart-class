@@ -21,6 +21,8 @@ uv run ruff format --check .
 
 CI runs exactly these three, on Ubuntu and on Windows (the platform the tool is mainly used on). The tests need no network and do not depend on a local `.env`: the models are the fakes in `tests/fakes.py`, and `tests/conftest.py` builds the videos with ffmpeg on the fly. When fixing a bug, start with a test that reproduces it, and make sure the function you mock is actually on the code path under test.
 
+After changing the upload or transcription path in `bailian.py` or `media.py`, run the real-API smoke test once with a key: `VSC_REAL_SMOKE=1 uv run pytest -q -m real`. It uploads a one-second clip, sends one image and transcribes the clip (a few fen); the fakes never touch the network, so it is the only check that exercises the real upload. CI does not run it.
+
 ## Code conventions
 
 - The lint rules and the line length (120) live in `pyproject.toml`. Prompts are written one paragraph per line; their files opt out of the line-length check individually.
