@@ -99,6 +99,15 @@ def run(
     concurrency: Annotated[
         int, typer.Option("--concurrency", help="幻灯片描述并发数", min=1, rich_help_panel="处理")
     ] = 4,
+    jobs: Annotated[
+        int,
+        typer.Option(
+            "--jobs",
+            help="批量时同时处理几节课（线程，各课独立调用模型）；1 为顺序处理",
+            min=1,
+            rich_help_panel="处理",
+        ),
+    ] = 1,
     force_vision: Annotated[
         bool, typer.Option("--force-vision", help="忽略已有 frames.json，重新描述所有幻灯片", rich_help_panel="处理")
     ] = False,
@@ -182,12 +191,12 @@ def run(
     if local and new_id is not None:
         raise typer.BadParameter("--local 与录播 NewID 不能同时给出")
     if local:  # 批量/本地分支自行处理错误与退出码（typer.Exit 是 RuntimeError 子类，不能放进下面的 try）
-        return _run_local(local, wanted, opts, no_skip_done)
+        return _run_local(local, wanted, opts, no_skip_done, jobs)
     if new_id is None and not (title or start or end or limit or semester):
         raise typer.BadParameter("批量模式需要至少一个筛选条件：--title/--start/--end/--semester/--limit")
     sc = _client_or_fail()
     if new_id is None:
-        return _run_batch(sc, new_id, wanted, opts, no_skip_done, title, start, end, semester, limit, order)
+        return _run_batch(sc, new_id, wanted, opts, no_skip_done, title, start, end, semester, limit, order, jobs)
     try:
         report = pipeline.run_lesson(sc, new_id, stages=wanted, opts=opts, log=log)
     except (
@@ -266,14 +275,16 @@ def _client_or_fail():
         fail(f"网络错误：{exc}", EXIT_UPSTREAM)
 
 
-def _run_local(local: list[Path], wanted: tuple[str, ...], opts: pipeline.RunOptions, no_skip_done: bool) -> None:
+def _run_local(
+    local: list[Path], wanted: tuple[str, ...], opts: pipeline.RunOptions, no_skip_done: bool, jobs: int
+) -> None:
     found = pipeline.discover_local(local)
     if not found:
         fail("--local 下没有找到课时目录（需含 meta.json）", EXIT_NO_MATCH)
     videos = [v for v, _ in found]
     lesson_dirs = {v.id: d for v, d in found}  # 就在给的目录上处理，不去数据目录里按 NewID 找
     wanted = tuple(s for s in wanted if s != "fetch")
-    log(f"本地 {len(videos)} 节，阶段 {','.join(wanted)}")
+    log(f"本地 {len(videos)} 节，阶段 {','.join(wanted)}" + (f"，{jobs} 节并行" if jobs > 1 else ""))
     try:
         report = pipeline.run_batch(
             None,
@@ -283,13 +294,14 @@ def _run_local(local: list[Path], wanted: tuple[str, ...], opts: pipeline.RunOpt
             log=log,
             skip_done=not no_skip_done,
             lesson_dirs=lesson_dirs,
+            jobs=jobs,
         )
     except (ConfigError, BailianError) as exc:
         fail_pipeline_exc(exc)
     _finish_batch(report, "local")
 
 
-def _run_batch(sc, new_id, wanted, opts, no_skip_done, title, start, end, semester, limit, order) -> None:
+def _run_batch(sc, new_id, wanted, opts, no_skip_done, title, start, end, semester, limit, order, jobs) -> None:
     if not (title or start or end or limit or semester):
         raise typer.BadParameter("批量模式需要至少一个筛选条件：--title/--start/--end/--semester/--limit")
     videos = _iter_videos(sc, title=title, start=start, end=end, semester=semester, limit=limit, order=order)
@@ -299,9 +311,11 @@ def _run_batch(sc, new_id, wanted, opts, no_skip_done, title, start, end, semest
         else:
             warn("没有匹配的录播")
         raise typer.Exit(EXIT_NO_MATCH)
-    log(f"批量 {len(videos)} 节，阶段 {','.join(wanted)}")
+    log(f"批量 {len(videos)} 节，阶段 {','.join(wanted)}" + (f"，{jobs} 节并行" if jobs > 1 else ""))
     try:
-        report = pipeline.run_batch(sc, videos, stages=wanted, opts=opts, log=log, skip_done=not no_skip_done)
+        report = pipeline.run_batch(
+            sc, videos, stages=wanted, opts=opts, log=log, skip_done=not no_skip_done, jobs=jobs
+        )
     except (ConfigError, BailianError) as exc:
         fail_pipeline_exc(exc)
     _finish_batch(report, "batch")
@@ -324,6 +338,7 @@ def _finish_batch(report: dict, mode: str) -> None:
                 "results": results,
                 "tokens": report["tokens"],
                 "tokens_detail": report.get("tokens_detail", {}),
+                "jobs": report.get("jobs", 1),
                 "report": str(report_path),
             }
         )

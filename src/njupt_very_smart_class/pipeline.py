@@ -11,8 +11,10 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
+import threading
 import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -701,75 +703,121 @@ def run_batch(
     log: Log = print,
     skip_done: bool = True,
     lesson_dirs: dict[str, Path] | None = None,
+    jobs: int = 1,
 ) -> dict:
     """对列表中的录播逐节执行 run_lesson；单节失败不中断，结束时返回汇总。
 
     lesson_dirs：--local 给出的课时目录（NewID → 目录），有就在那里处理，不去数据目录里找。
+    jobs > 1 时用线程同时处理多节课（一节课的时间大头是等模型和 ffmpeg 子进程）。models 为 None 时每课各建一套；
+    传可调用对象则每课各调一次建一套；传 ModelSet 则各课共用，jobs > 1 时每课的 tokens 就分不开。
+    会话失效（AuthError）后不再开始新的课，已在跑的跑完；没开始的不进结果。
     """
     opts = opts or RunOptions()
-    models = models or (dashscope_model_set(**opts.models) if set(stages) & MODEL_STAGES else None)
-    results = []
-    aborted = None
-    for i, v in enumerate(videos, 1):
-        head = f"[batch {i}/{len(videos)}] {v.start_time:%m-%d %H:%M} {v.course_name} {v.title}"
+    jobs = max(1, int(jobs))
+    if models is None and set(stages) & MODEL_STAGES:
+        built = dashscope_model_set(**opts.models)  # 缺 API Key 在这里就以配置错误退出（退出码 1），不是每课各报一次
+        models = built if jobs == 1 else None  # 顺序处理时共用一套；并行时每课各建，按课记账才分得开
+    total = len(videos)
+    stop = threading.Event()
+    lock = threading.Lock()  # 各课线程汇总 tokens 用
+    totals: dict[str, int] = {}
+    totals_detail: dict[str, dict[str, int]] = {}
+
+    def one(i: int, v) -> dict | None:
+        if stop.is_set():
+            return None
+        head = f"[batch {i}/{total}] {v.start_time:%m-%d %H:%M} {v.course_name} {v.title}"
+        tag = f"[{i}/{total}]"  # 并行时各课日志交错，每行带序号才分得清
+        say = log if jobs == 1 else (lambda msg: log(f"{tag} {msg}"))
         try:
             try:
                 lesson_dir = (lesson_dirs or {}).get(v.id) or lesson.find_lesson_dir(v.id)
             except ValueError:
                 lesson_dir = None
             if skip_done and lesson_dir is not None and lesson_done(lesson_dir, stages):
-                log(f"{head} → 已完成，跳过")
-                results.append(
-                    {
-                        "new_id": v.id,
-                        "status": "skipped",
-                        "verdict": classify_lesson(lesson_dir),
-                        "title": v.title,
-                        "course": v.course_name,
-                        "summary": str(find_summary(lesson_dir) or lesson_dir / "summary.md"),
-                    }
-                )
-                continue
-            if lesson_dir is None and "fetch" not in stages:
-                raise RuntimeError("课时未下载且未请求 fetch 阶段")
-            log(head)
-            report = run_lesson(sc, v.id, stages=stages, opts=opts, models=models, log=log, lesson_dir=lesson_dir)
-            stage_errors = report["state"].get("errors", {})
-            results.append(
-                {
+                say(f"{head} → 已完成，跳过")
+                return {
                     "new_id": v.id,
-                    "status": "partial" if stage_errors else "ok",
-                    "errors": stage_errors,
-                    "verdict": classify_lesson(Path(report["lesson_dir"])),
+                    "status": "skipped",
+                    "verdict": classify_lesson(lesson_dir),
                     "title": v.title,
                     "course": v.course_name,
-                    "start": v.start_time.isoformat(),
-                    "summary": str(
-                        find_summary(Path(report["lesson_dir"])) or Path(report["lesson_dir"]) / "summary.md"
-                    ),
-                    "tokens": report["state"].get("tokens", {}),
-                    "tokens_detail": report["state"].get("tokens_detail", {}),
+                    "summary": str(find_summary(lesson_dir) or lesson_dir / "summary.md"),
                 }
-            )
-        except AuthError as exc:  # 会话失效时后续课时必然同样失败，提前结束
-            log(f"{head} → 会话失效，终止批量：{exc}")
-            results.append(
-                {"new_id": v.id, "status": "error", "title": v.title, "course": v.course_name, "error": str(exc)[:500]}
-            )
-            aborted = "auth"
-            break
+            if lesson_dir is None and "fetch" not in stages:
+                raise RuntimeError("课时未下载且未请求 fetch 阶段")
+            say(head)
+            m = models() if callable(models) else models
+            report = run_lesson(sc, v.id, stages=stages, opts=opts, models=m, log=say, lesson_dir=lesson_dir)
+            with lock:
+                _add(totals, report["tokens"])
+                _add_detail(totals_detail, report["tokens_detail"])
+            stage_errors = report["state"].get("errors", {})
+            return {
+                "new_id": v.id,
+                "status": "partial" if stage_errors else "ok",
+                "errors": stage_errors,
+                "verdict": classify_lesson(Path(report["lesson_dir"])),
+                "title": v.title,
+                "course": v.course_name,
+                "start": v.start_time.isoformat(),
+                "summary": str(find_summary(Path(report["lesson_dir"])) or Path(report["lesson_dir"]) / "summary.md"),
+                "tokens": report["state"].get("tokens", {}),
+                "tokens_detail": report["state"].get("tokens_detail", {}),
+            }
+        except AuthError as exc:  # 会话失效时后续课时必然同样失败，不再开始新的
+            say(f"{head} → 会话失效，终止批量：{exc}")
+            stop.set()
+            return {
+                "new_id": v.id,
+                "status": "error",
+                "title": v.title,
+                "course": v.course_name,
+                "error": str(exc)[:500],
+            }
         except Exception as exc:  # 单节失败不影响后续
-            log(f"{head} → 失败：{exc}")
-            results.append(
-                {"new_id": v.id, "status": "error", "title": v.title, "course": v.course_name, "error": str(exc)[:500]}
-            )
+            say(f"{head} → 失败：{exc}")
+            return {
+                "new_id": v.id,
+                "status": "error",
+                "title": v.title,
+                "course": v.course_name,
+                "error": str(exc)[:500],
+            }
+
+    if jobs == 1:
+        results = []
+        for i, v in enumerate(videos, 1):
+            r = one(i, v)
+            if r is None:
+                break
+            results.append(r)
+            if stop.is_set():
+                break
+    else:
+        with ThreadPoolExecutor(max_workers=jobs) as pool:
+            futures = [pool.submit(one, i, v) for i, v in enumerate(videos, 1)]
+            results = [r for f in futures if (r := f.result()) is not None]  # 按列表顺序，不按完成顺序
     return {
         "results": results,
-        "tokens": models.spent() if models else {},
-        "tokens_detail": models.spent_detail() if models else {},
+        "tokens": totals,
+        "tokens_detail": totals_detail,
         "stages": list(stages),
-        "aborted": aborted,
+        "aborted": "auth" if stop.is_set() else None,
+        "jobs": jobs,
     }
+
+
+def _add(acc: dict[str, int], delta: dict[str, int]) -> None:
+    for k, v in delta.items():
+        acc[k] = acc.get(k, 0) + v
+
+
+def _add_detail(acc: dict[str, dict[str, int]], delta: dict[str, dict[str, int]]) -> None:
+    for k, d in delta.items():
+        item = acc.setdefault(k, {"input": 0, "output": 0})
+        item["input"] += int(d.get("input") or 0)
+        item["output"] += int(d.get("output") or 0)
 
 
 def discover_local(roots: list[Path]) -> list[tuple[NjuptSmartclassVideoSummary, Path]]:

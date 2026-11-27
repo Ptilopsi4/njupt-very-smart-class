@@ -130,6 +130,68 @@ def test_run_batch_continues_on_error_and_reports(monkeypatch, lesson_dir, data_
     assert pipeline.lesson_done(lesson_dir, stages) and not pipeline.lesson_done(lesson_dir, ("fetch",))
 
 
+def test_run_batch_jobs_runs_lessons_in_parallel_in_order(lesson_dir, data_root):
+    import threading
+    import time
+
+    second = data_root / "Linux编程" / "ID43"
+    shutil.copytree(lesson_dir, second)
+    videos = [_video(1, lesson_dir), _video(1, second)]  # i=1 → id 取目录名
+    lesson_dirs = {"ID42": lesson_dir, "ID43": second}
+    windows: list[tuple[float, float]] = []
+    guard = threading.Lock()
+
+    class SlowAsr(FakeAsrModel):
+        def transcribe(self, audio):
+            start = time.monotonic()
+            time.sleep(0.3)
+            out = super().transcribe(audio)
+            with guard:
+                windows.append((start, time.monotonic()))
+            return out
+
+    def factory():  # 每课各建一套假模型，按课记账才分得开
+        ms = fake_model_set()
+        ms.asr = SlowAsr()
+        return ms
+
+    stages = ("prepare", "transcribe", "vision", "summarize", "render")
+    logs: list[str] = []
+    report = pipeline.run_batch(
+        None, videos, stages=stages, models=factory, log=logs.append, lesson_dirs=lesson_dirs, jobs=2
+    )
+    assert [r["new_id"] for r in report["results"]] == ["ID42", "ID43"]  # 按列表顺序，不按完成顺序
+    assert [r["status"] for r in report["results"]] == ["ok", "ok"]
+    assert all(sum(r["tokens"].values()) == 2100 for r in report["results"])
+    assert sum(report["tokens"].values()) == 4200 and report["jobs"] == 2
+    (a_start, a_end), (b_start, b_end) = sorted(windows)
+    assert b_start < a_end  # 两节课的转写时间段重叠，确实并行
+    assert any(line.startswith("[1/2] ") for line in logs) and any(line.startswith("[2/2] ") for line in logs)
+
+
+def test_run_batch_stops_after_auth_error(monkeypatch, lesson_dir):
+    from njupt_very_smart_class.auth import AuthError
+
+    attempted: list[str] = []
+
+    def fake_run_lesson(sc, new_id, **kw):
+        attempted.append(new_id)
+        raise AuthError("会话无效")
+
+    monkeypatch.setattr(pipeline, "run_lesson", fake_run_lesson)
+    videos = [_video(1, lesson_dir), _video(2, lesson_dir)]
+    report = pipeline.run_batch(
+        None,
+        videos,
+        stages=("render",),
+        models=fake_model_set(),
+        log=lambda *_: None,
+        lesson_dirs={"ID42": lesson_dir, "NOPE2": lesson_dir},
+    )
+    assert attempted == ["ID42"] and report["aborted"] == "auth"
+    assert [r["status"] for r in report["results"]] == ["error"]
+
+
 def test_cli_run_batch_requires_filter():
     from typer.testing import CliRunner
 

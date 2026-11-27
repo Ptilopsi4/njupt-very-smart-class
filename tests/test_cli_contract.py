@@ -39,6 +39,35 @@ def test_run_json_puts_result_on_stdout_and_logs_on_stderr(lesson_dir, monkeypat
     assert "[prepare]" not in result.stdout  # 日志没混进 stdout
 
 
+def test_run_local_jobs_runs_lessons_in_parallel(lesson_dir, data_root, monkeypatch):  # noqa: F811
+    from njupt_very_smart_class import cli_run
+
+    monkeypatch.setattr(pipeline, "dashscope_model_set", lambda **kw: fake_model_set())
+    second = data_root / "Linux编程" / "ID43"
+    shutil.copytree(lesson_dir, second)
+    logs: list[str] = []
+    monkeypatch.setattr(cli_run, "log", logs.append)
+    result = _invoke(
+        [
+            "--json",
+            "run",
+            "--local",
+            str(lesson_dir.parent),
+            "--stages",
+            "prepare,transcribe,vision,summarize,render",
+            "--jobs",
+            "2",
+        ]
+    )
+    assert result.exit_code == 0, _why(result)
+    payload = json.loads(result.stdout)
+    assert payload["jobs"] == 2 and [r["new_id"] for r in payload["results"]] == ["ID42", "ID43"]
+    assert [r["status"] for r in payload["results"]] == ["ok", "ok"]
+    assert sum(payload["tokens"].values()) == 4200  # 两课各自的用量都记上了
+    assert any(line.startswith("[1/2] ") for line in logs) and any(line.startswith("[2/2] ") for line in logs)
+    assert "2 节并行" in " ".join(logs)
+
+
 def _single_mode(monkeypatch):
     """单节模式需要会话；课时已下载且不跑 fetch 时客户端不会被真正使用。"""
     monkeypatch.setattr(client, "make_client", lambda: object())
