@@ -86,7 +86,7 @@ Which model each of the eight `run` stages uses, so you can tell what a model ch
 
 ## Idempotence and resuming
 
-- Every stage skips work that is already on disk: mp4, wav, the mp3 copy made for the transcription upload, slides, transcript, slide descriptions, segment notes, video-mode result, merged result.
+- Every stage skips work that is already on disk: mp4, wav, the FLAC copy made for the transcription upload, slides, transcript, slide descriptions, segment notes, video-mode result, merged result.
 - Caches are keyed on model plus actual input: after a model change, or when an upstream stage is recomputed, the stages after it recompute on their own. To redo the transcription, for which there is no force flag, delete `transcript.json` from the lesson directory and rerun.
 - A batch skips lessons whose `state.json` marks every stage as done and whose `summary.md` exists. **That check ignores the model**: after a model change, add `--no-skip-done` to have finished lessons recomputed. To continue with the next batch, raise `--limit` and rerun the same command; it takes the first N recordings in order and skips the finished ones. If the session expires midway, the batch ends with exit code 3; after the user logs in, rerun the same batch command.
 - Lessons that are already downloaded are finished with `run --local`, no login needed; log in again only to download more.

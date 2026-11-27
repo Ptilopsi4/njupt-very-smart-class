@@ -368,8 +368,8 @@ def test_asr_adapter_full_flow_and_no_words(monkeypatch, tmp_path):
     assert c.spent == {"asr-m": 3} and c.spent_detail == {"asr-m": {"input": 1, "output": 2}}  # 转写也计入
     submit = next(x for x in s.calls if x["m"] == "POST" and "transcription" in x["url"])
     assert submit["headers"]["X-DashScope-Async"] == "enable"
-    assert submit["json"]["input"]["file_urls"] == ["oss://d/x/audio.mp3"]  # wav 先压成 mp3 再上传
-    assert (tmp_path / "audio.mp3").exists()
+    assert submit["json"]["input"]["file_urls"] == ["oss://d/x/audio.flac"]  # wav 先转成 FLAC 再上传
+    assert (tmp_path / "audio.flac").exists()
     s2 = _policy_session(transcribe_no_words=True)
     monkeypatch.setattr(bailian.requests, "post", s2.post)
     out2 = bailian.DashScopeAsrModel(_client_with(s2), "asr-m").transcribe(audio)

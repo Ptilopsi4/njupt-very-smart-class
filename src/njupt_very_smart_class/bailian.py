@@ -369,12 +369,12 @@ class DashScopeAsrModel:
 
     @staticmethod
     def _uploadable(audio: Path) -> Path:
-        """wav 先转成 mp3 再上传（体积约 1/4，转写结果不受影响）；没有 libmp3lame 或转码失败时直接传 wav。"""
+        """wav 先转成 FLAC 再上传（体积约一半，无损，转写与 wav 的差异在重跑噪声之内）；编码失败时直接传 wav。"""
         if audio.suffix.lower() != ".wav":
             return audio
-        mp3 = audio.with_suffix(".mp3")
+        flac = audio.with_suffix(".flac")
         try:
-            return media.compress_audio(audio, mp3)
+            return media.compress_audio(audio, flac)
         except media.MediaError:
             return audio
 

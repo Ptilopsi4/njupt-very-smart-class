@@ -126,7 +126,7 @@ data/<课程名>/<编号>/
 └── Seg1/                 每一段录制的文件；只有一段时没有这一层
     ├── VGA.mp4           屏幕流录像；Video1.mp4 是摄像机画面。--prune-video 会删掉它们
     ├── audio.wav         抽出来的音频，16 kHz 单声道
-    ├── audio.mp3         转写上传用的压缩版，约 wav 的 1/4
+    ├── audio.flac        转写上传用的无损压缩版，约 wav 的一半
     ├── transcript.json   每句话的起止时间（毫秒）和文字
     ├── slides/           课件页截图，以及视觉模型对每一页的描述
     ├── c_result.json     转写模式的笔记

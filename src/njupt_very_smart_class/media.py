@@ -117,9 +117,12 @@ def extract_audio(src: Path, dst: Path, *, sample_rate: int = 16000) -> Path:
     return dst
 
 
-def compress_audio(src: Path, dst: Path, *, bitrate: str = "64k") -> Path:
-    """wav → mp3（libmp3lame，单声道 16 kHz）：语音转写上传用，47 分钟 86 MB 的 PCM 约 21 MB；
-    dst 已存在且与源等长则跳过。"""
+def compress_audio(src: Path, dst: Path) -> Path:
+    """wav → FLAC（无损，单声道 16 kHz）：语音转写上传用，47 分钟 86 MB 的 PCM 约 45 MB；dst 已存在且与源等长则跳过。
+
+    不用 mp3 这类有损编码：实测同一节课 wav 与 mp3 的转写相差约 1% 字符（含 add→爱的、不包括→都包括 这类内容翻转），
+    是同一输入重跑两次的差异的 2–3 倍，加到 128 kbps 也不变；FLAC 与 wav 的差异降到重跑噪声的水平。
+    """
     if dst.exists() and same_duration(dst, src):
         return dst
     require_ffmpeg()
@@ -137,9 +140,7 @@ def compress_audio(src: Path, dst: Path, *, bitrate: str = "64k") -> Path:
             "-ar",
             "16000",
             "-c:a",
-            "libmp3lame",
-            "-b:a",
-            bitrate,
+            "flac",
             str(dst),
         ],
         timeout=600,

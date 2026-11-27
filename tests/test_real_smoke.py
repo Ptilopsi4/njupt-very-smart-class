@@ -55,11 +55,11 @@ def _sine_wav(path: Path) -> Path:
 def test_upload_image_and_transcription_roundtrip(tmp_path):
     models = effective_models()
     client = bailian.BailianClient()
-    # 1. 临时上传：和转写走同一条路（wav → mp3 → OSS），回一个 oss:// 地址
+    # 1. 临时上传：和转写走同一条路（wav → FLAC → OSS），回一个 oss:// 地址
     wav = _sine_wav(tmp_path / "smoke.wav")
     uploaded = bailian.DashScopeAsrModel._uploadable(wav)
     url = client.upload_temp(uploaded, models["asr"])
-    assert url.startswith("oss://") and url.endswith(".mp3"), url
+    assert url.startswith("oss://") and url.endswith(".flac"), url
     # 2. 视觉：一张图 → JSON 对象
     image = tmp_path / "dot.png"
     Image.new("RGB", (64, 64), (200, 30, 30)).save(image)

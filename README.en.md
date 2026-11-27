@@ -128,7 +128,7 @@ data/<course>/<id>/
 └── Seg1/                 files of each recorded segment; absent when there is only one
     ├── VGA.mp4           screen recording; Video1.mp4 is the camera. --prune-video deletes them
     ├── audio.wav         extracted audio, 16 kHz mono
-    ├── audio.mp3         compressed copy for the transcription upload, about a quarter of the wav
+    ├── audio.flac        lossless copy for the transcription upload, about half of the wav
     ├── transcript.json   start and end time (ms) and text of every sentence
     ├── slides/           slide screenshots, and the vision model's description of each
     ├── c_result.json     the transcription mode's notes
