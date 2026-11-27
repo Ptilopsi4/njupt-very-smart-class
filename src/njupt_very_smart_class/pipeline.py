@@ -608,8 +608,13 @@ def _judge_vga(models, seg_dir: Path, m, sc, new_id: str, log: Log, *, force: bo
     state = load_state(seg_dir)
     cached = state.get("vga_judge")
     usable = isinstance(cached, dict) and "usable" in cached
-    # 旧版判定结果没记模型名：按当前模型看待
-    if usable and not force and cached.get("model") in (None, models.vision.name):
+    # 旧版判定结果没记模型名 / prompt 版本：按当前看待
+    if (
+        usable
+        and not force
+        and cached.get("model") in (None, models.vision.name)
+        and vision.prompt_version_ok(cached.get("prompt_version"))
+    ):
         return cached
     verdict = vision.judge_screen(models.vision, seg_dir, m.slides, seg_dir / "VGA.mp4")
     state["vga_judge"] = verdict

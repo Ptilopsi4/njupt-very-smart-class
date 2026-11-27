@@ -42,6 +42,13 @@ def _strip(path, *keys) -> None:
     path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
 
 
+def _set(path, key, value) -> None:
+    data = _load(path)
+    for item in data if isinstance(data, list) else [data]:
+        item[key] = value
+    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+
 # ---------- 课件描述 ----------
 
 
@@ -208,8 +215,11 @@ def test_legacy_lesson_is_not_recomputed_on_upgrade(lesson_dir, synthetic_video)
     for name in ("chunks.json", "c_result.json", "final.json"):
         _strip(lesson_dir / name, "cache_key")
     _strip(lesson_dir / "slides" / "frames.json", "model")
+    # 手填常量时代写下的版本号 1：与没记版本一样按当前看待
+    _set(lesson_dir / "slides" / "frames.json", "prompt_version", 1)
     state = pipeline.load_state(lesson_dir)
     state["vga_judge"].pop("model")
+    state["vga_judge"]["prompt_version"] = 1
     (lesson_dir / "state.json").write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
 
     upgraded = _a_set()
@@ -222,6 +232,19 @@ def test_legacy_lesson_is_not_recomputed_on_upgrade(lesson_dir, synthetic_video)
     pipeline.run_lesson(None, "ID42", stages=stages, models=forced, opts=opts, log=lambda *_: None)
     assert _calls(forced, "vision", "vision:") == 3
     assert [_calls(forced, "text", k) for k in ("map:", "reduce:", "fuse:")] == [1, 1, 1]
+
+
+def test_prompt_change_invalidates_frames_and_vga_judge(lesson_dir, synthetic_video, monkeypatch):  # noqa: F811
+    stages = ALL[1:]
+    pipeline.run_lesson(None, "ID42", stages=stages, models=_a_set(), log=lambda *_: None)
+    assert isinstance(vision.PROMPT_VERSION, str) and len(vision.PROMPT_VERSION) == 12
+    monkeypatch.setattr(vision, "PROMPT_VERSION", "deadbeef1234")  # 模板改了 → 哈希变
+    changed = _a_set()
+    pipeline.run_lesson(None, "ID42", stages=stages, models=changed, log=lambda *_: None)
+    assert _calls(changed, "vision", "judge:") == 8  # VGA 判定缓存同样看 prompt 版本
+    assert _calls(changed, "vision", "vision:") == 3 and changed.asr.calls == []
+    assert [_calls(changed, "text", k) for k in ("map:", "reduce:", "fuse:")] == [1, 1, 1]
+    assert pipeline.load_state(lesson_dir)["vga_judge"]["prompt_version"] == "deadbeef1234"
 
 
 # ---------- transcribe 失败 ----------

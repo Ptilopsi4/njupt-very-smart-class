@@ -5,6 +5,7 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 from collections.abc import Callable
@@ -16,9 +17,6 @@ from PIL import Image
 from .media import duration_seconds, probe
 from .models import VisionModel
 from .slides import Slide, projection_roi, sample_frames
-
-# prompt 模板改了就加一：旧描述是按旧 prompt 生成的，不能继续当缓存用
-PROMPT_VERSION = 1
 
 # 学科无关的画面分类：教学内容 = 任何向课堂展示的讲授材料
 KINDS = (
@@ -68,6 +66,15 @@ _CAMERA_T = """这是大学课堂录播中教室机位摄像机的第 {index}/{t
 CLASSIFY_PROMPT = _CLASSIFY_T.replace("{_KIND_LIST}", _KIND_LIST)
 PROMPT = _PROMPT_T.replace("{_KIND_LIST}", _KIND_LIST)
 CAMERA_PROMPT = _CAMERA_T.replace("{_KIND_LIST}", _KIND_LIST)
+
+# 缓存版本 = 三个 prompt 模板的哈希：模板一改，旧描述自动作废，不用记得手动加版本号
+PROMPT_VERSION = hashlib.sha256(f"{CLASSIFY_PROMPT}\n{PROMPT}\n{CAMERA_PROMPT}".encode()).hexdigest()[:12]
+_LEGACY_VERSIONS = (1,)  # 手填常量时代的值：当时没有哈希，与今天的判定一致，按当前版本看待
+
+
+def prompt_version_ok(recorded) -> bool:
+    """产物里记的版本能否当作当前版本：没记（更旧的产物）或等于手填的 1 都算。"""
+    return recorded is None or recorded == PROMPT_VERSION or recorded in _LEGACY_VERSIONS
 
 
 def prepare_image(
@@ -150,6 +157,7 @@ def judge_screen(
         "total": len(results),
         "samples": results,
         "model": vision_model.name,
+        "prompt_version": PROMPT_VERSION,
     }
 
 
@@ -160,9 +168,7 @@ def _stale(frames: dict[int, dict], slides: list[Slide], camera: bool, model: st
         if f and (f.get("time") != s.time or f.get("file") != s.file or (f.get("source") == "camera") != camera):
             return True
     # 旧版 frames.json 没记 prompt_version：按当前版本看待，升级不至于整课重算
-    return any(
-        f.get("model") != model or f.get("prompt_version", PROMPT_VERSION) != PROMPT_VERSION for f in frames.values()
-    )
+    return any(f.get("model") != model or not prompt_version_ok(f.get("prompt_version")) for f in frames.values())
 
 
 def _backfill(frames: dict[int, dict], offset_s: float, model: str | None = None) -> bool:
